@@ -1,5 +1,12 @@
 package org.example.reader.ui.nav
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material.icons.Icons
@@ -16,7 +23,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -24,6 +31,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import org.example.reader.core.AppDependencies
 import org.example.reader.core.model.Book
+import org.example.reader.core.util.AppBackHandler
 import org.example.reader.ui.catalog.CatalogScreen
 import org.example.reader.ui.components.EmptyState
 import org.example.reader.ui.detail.BookDetailScreen
@@ -32,13 +40,6 @@ import org.example.reader.ui.reader.ReaderScreen
 import org.example.reader.ui.recent.RecentScreen
 import org.example.reader.ui.search.SearchScreen
 import org.example.reader.ui.shelf.ShelfScreen
-
-/** 目录页的目标：从详情或阅读器进入都只需要这三样。 */
-private data class CatalogTarget(
-    val bookId: String,
-    val title: String,
-    val currentIndex: Int?,
-)
 
 /** 底部导航项。书架 / 发现 / 搜索 / 最近 / 我的（搜索是独立入口，不挤在书架里）。 */
 private enum class MainTab(val label: String, val icon: ImageVector) {
@@ -50,93 +51,134 @@ private enum class MainTab(val label: String, val icon: ImageVector) {
 }
 
 /**
+ * 覆盖在 tab 之上的页面。用栈管理：阅读器、详情、目录可以互相叠，
+ * 系统返回键逐层弹出，而不是直接回桌面。
+ */
+private sealed interface Overlay {
+    data class Reader(val bookId: String, val startIndex: Int?) : Overlay
+
+    data class Detail(val book: Book, val session: Int) : Overlay
+
+    data class Catalog(
+        val bookId: String,
+        val title: String,
+        val currentIndex: Int?,
+    ) : Overlay
+}
+
+/**
  * 主框架。
  *
- * 阅读器不做成底部导航的一个 tab，而是覆盖层：阅读时应当全屏无干扰。
- * 这里用一个 `openBookId` 状态控制——非空即全屏阅读器。
+ * 底部导航 + 覆盖层栈。所有层级切换都走 [AnimatedContent]，
+ * 系统返回由 [AppBackHandler] 统一接管：
+ * 有覆盖层就弹一层，书架多选由 ShelfScreen 自己拦。
  */
 @Composable
 fun MainShell(deps: AppDependencies, modifier: Modifier = Modifier) {
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
-    var openBookId by rememberSaveable { mutableStateOf<String?>(null) }
-    // 从详情页目录进入时指定起始章；普通打开为 null（续读）
-    var openChapterIndex by rememberSaveable { mutableStateOf<Int?>(null) }
-    // 详情页是独立页面，覆盖在 tab 之上；进程被杀后不恢复（可用快照无法序列化）
-    var detailBook by remember { mutableStateOf<Book?>(null) }
+    val overlays = remember { mutableStateListOf<Overlay>() }
     var detailSession by remember { mutableIntStateOf(0) }
-    var catalogTarget by remember { mutableStateOf<CatalogTarget?>(null) }
+
+    fun popOverlay() {
+        if (overlays.isNotEmpty()) overlays.removeAt(overlays.lastIndex)
+    }
 
     fun openReader(bookId: String, startIndex: Int? = null) {
-        openBookId = bookId
-        openChapterIndex = startIndex
+        overlays.add(Overlay.Reader(bookId, startIndex))
     }
 
     fun showDetail(book: Book) {
-        detailBook = book
         detailSession += 1
+        overlays.add(Overlay.Detail(book, detailSession))
     }
 
-    // 目录覆盖在阅读器/详情之上：从阅读器打开目录时不销毁阅读状态
-    val catalog = catalogTarget
-    if (catalog != null) {
-        CatalogScreen(
-            deps = deps,
-            bookId = catalog.bookId,
-            bookTitle = catalog.title,
-            currentIndex = catalog.currentIndex,
-            onBack = { catalogTarget = null },
-            onSelectChapter = { index ->
-                catalogTarget = null
-                openReader(catalog.bookId, index)
-            },
-            modifier = modifier,
+    fun openCatalog(book: Book) {
+        overlays.add(
+            Overlay.Catalog(
+                bookId = book.bookId,
+                title = book.name,
+                currentIndex = if (book.durChapterTitle.isNullOrBlank()) null else book.durChapterIndex,
+            ),
         )
-        return
     }
 
-    val bookId = openBookId
-    if (bookId != null) {
-        ReaderScreen(
-            deps = deps,
-            bookId = bookId,
-            startIndex = openChapterIndex,
-            onBack = {
-                openBookId = null
-                openChapterIndex = null
-            },
-            modifier = modifier,
-        )
-        return
-    }
+    AppBackHandler(enabled = overlays.isNotEmpty(), onBack = ::popOverlay)
 
-    val detail = detailBook
-    if (detail != null) {
-        BookDetailScreen(
-            deps = deps,
-            initialBook = detail,
-            sessionKey = detailSession,
-            onBack = { detailBook = null },
-            onOpenCatalog = { book ->
-                catalogTarget = CatalogTarget(
-                    bookId = book.bookId,
-                    title = book.name,
-                    currentIndex = if (book.durChapterTitle.isNullOrBlank()) null else book.durChapterIndex,
-                )
-            },
-            onRead = { id, index -> openReader(id, index) },
-            modifier = modifier,
-        )
-        return
-    }
-
-    Scaffold(
+    AnimatedContent(
+        targetState = overlays.lastOrNull(),
         modifier = modifier.fillMaxSize(),
+        label = "screen",
+        transitionSpec = {
+            if (targetState != null) {
+                // 入栈：右侧滑入 + 淡入
+                (slideInHorizontally(tween(260)) { it / 4 } + fadeIn(tween(200))) togetherWith
+                    fadeOut(tween(120))
+            } else {
+                // 出栈：向右滑出 + 淡出
+                fadeIn(tween(200)) togetherWith
+                    (slideOutHorizontally(tween(260)) { it / 4 } + fadeOut(tween(160)))
+            }
+        },
+    ) { screen ->
+        when (screen) {
+            null -> MainTabs(
+                deps = deps,
+                selectedTab = selectedTab,
+                onSelectTab = { selectedTab = it },
+                onOpenBook = { openReader(it) },
+                onShowDetail = ::showDetail,
+            )
+
+            is Overlay.Reader -> ReaderScreen(
+                deps = deps,
+                bookId = screen.bookId,
+                startIndex = screen.startIndex,
+                onBack = ::popOverlay,
+                modifier = Modifier.fillMaxSize(),
+            )
+
+            is Overlay.Detail -> BookDetailScreen(
+                deps = deps,
+                initialBook = screen.book,
+                sessionKey = screen.session,
+                onBack = ::popOverlay,
+                onOpenCatalog = ::openCatalog,
+                onRead = { id, index -> openReader(id, index) },
+                modifier = Modifier.fillMaxSize(),
+            )
+
+            is Overlay.Catalog -> CatalogScreen(
+                deps = deps,
+                bookId = screen.bookId,
+                bookTitle = screen.title,
+                currentIndex = screen.currentIndex,
+                onBack = ::popOverlay,
+                onSelectChapter = { index ->
+                    popOverlay()
+                    openReader(screen.bookId, index)
+                },
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
+    }
+}
+
+@Composable
+private fun MainTabs(
+    deps: AppDependencies,
+    selectedTab: Int,
+    onSelectTab: (Int) -> Unit,
+    onOpenBook: (String) -> Unit,
+    onShowDetail: (Book) -> Unit,
+) {
+    Scaffold(
+        modifier = Modifier.fillMaxSize(),
         bottomBar = {
             NavigationBar {
                 MainTab.entries.forEachIndexed { index, tab ->
                     NavigationBarItem(
                         selected = selectedTab == index,
-                        onClick = { selectedTab = index },
+                        onClick = { onSelectTab(index) },
                         icon = { Icon(tab.icon, contentDescription = null) },
                         label = { Text(tab.label) },
                     )
@@ -145,33 +187,53 @@ fun MainShell(deps: AppDependencies, modifier: Modifier = Modifier) {
         },
     ) { padding ->
         Box(Modifier.fillMaxSize()) {
-            when (MainTab.entries[selectedTab]) {
-                MainTab.Shelf -> ShelfScreen(
-                    deps = deps,
-                    contentPadding = padding,
-                    onOpenBook = { openBookId = it },
-                    onShowDetail = ::showDetail,
-                )
-                MainTab.Explore -> ExploreScreen(
-                    deps = deps,
-                    contentPadding = padding,
-                    onShowDetail = ::showDetail,
-                )
-                MainTab.Search -> SearchScreen(
-                    deps = deps,
-                    contentPadding = padding,
-                    onShowDetail = ::showDetail,
-                )
-                MainTab.Recent -> RecentScreen(
-                    deps = deps,
-                    contentPadding = padding,
-                    onOpenBook = { openBookId = it },
-                    onShowDetail = ::showDetail,
-                )
-                MainTab.Profile -> EmptyState(
-                    message = "设置页开发中",
-                    modifier = Modifier.fillMaxSize(),
-                )
+            AnimatedContent(
+                targetState = selectedTab,
+                modifier = Modifier.fillMaxSize(),
+                label = "tab",
+                transitionSpec = {
+                    val forward = targetState > initialState
+                    (
+                        slideInHorizontally(tween(240)) { if (forward) it / 10 else -it / 10 } +
+                            fadeIn(tween(200))
+                        ) togetherWith (
+                        slideOutHorizontally(tween(180)) { if (forward) -it / 10 else it / 10 } +
+                            fadeOut(tween(140))
+                        )
+                },
+            ) { index ->
+                when (MainTab.entries[index]) {
+                    MainTab.Shelf -> ShelfScreen(
+                        deps = deps,
+                        contentPadding = padding,
+                        onOpenBook = onOpenBook,
+                        onShowDetail = onShowDetail,
+                    )
+
+                    MainTab.Explore -> ExploreScreen(
+                        deps = deps,
+                        contentPadding = padding,
+                        onShowDetail = onShowDetail,
+                    )
+
+                    MainTab.Search -> SearchScreen(
+                        deps = deps,
+                        contentPadding = padding,
+                        onShowDetail = onShowDetail,
+                    )
+
+                    MainTab.Recent -> RecentScreen(
+                        deps = deps,
+                        contentPadding = padding,
+                        onOpenBook = onOpenBook,
+                        onShowDetail = onShowDetail,
+                    )
+
+                    MainTab.Profile -> EmptyState(
+                        message = "设置页开发中",
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
             }
         }
     }

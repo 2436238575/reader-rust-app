@@ -124,32 +124,6 @@ fun BookDetailScreen(
                         )
                     }
                 }
-                item { HorizontalDivider() }
-                item {
-                    // 详情不承载目录：给一个明确入口，避免用户以为没做
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { onOpenCatalog(state.book) }
-                            .padding(16.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            text = "查看目录",
-                            style = MaterialTheme.typography.titleMedium,
-                            modifier = Modifier.weight(1f),
-                        )
-                        Text(
-                            text = if (state.book.totalChapterNum > 0) {
-                                "共 ${state.book.totalChapterNum} 章"
-                            } else {
-                                ""
-                            },
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
             }
         }
 

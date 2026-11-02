@@ -2,6 +2,7 @@ package org.example.reader.ui.components
 
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -10,7 +11,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -50,18 +50,23 @@ fun BookListRow(
         modifier = modifier
             .fillMaxWidth()
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
-            .padding(start = if (selectionMode) 4.dp else 16.dp, end = 8.dp, top = 10.dp, bottom = 10.dp),
+            .padding(start = 16.dp, end = 8.dp, top = 10.dp, bottom = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        if (selectionMode) {
-            Checkbox(checked = selected, onCheckedChange = null)
+        Box {
+            BookCoverThumb(
+                book = book,
+                serverConfig = serverConfig,
+                imageLoader = imageLoader,
+                modifier = Modifier.size(width = 64.dp, height = 88.dp),
+            )
+            if (selectionMode) {
+                SelectionBadge(
+                    selected = selected,
+                    modifier = Modifier.align(Alignment.TopStart).padding(4.dp),
+                )
+            }
         }
-        BookCoverThumb(
-            book = book,
-            serverConfig = serverConfig,
-            imageLoader = imageLoader,
-            modifier = Modifier.size(width = 64.dp, height = 88.dp),
-        )
         Spacer(Modifier.width(12.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(

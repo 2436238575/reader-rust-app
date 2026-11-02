@@ -121,7 +121,13 @@ androidApp/        Activity、清单、图标、资源
 - 书架交互：点击阅读、长按进详情；多选走顶栏「更多 → 选择书籍」，
   不要在长按上再叠多选手势。
 - 列表/网格是全局偏好（`deps.layout`），发现与搜索结果必须跟随，
-  不要各自维护一份视图状态。
+  不要各自维护一份视图状态；切换入口在书架顶栏「更多」菜单里，不占顶栏按钮。
+- 多选角标用 `SelectionBadge` 压在封面左上角（半透明底 + 白描边），
+  不要再用行首 Checkbox——它会挤压列表宽度。
+- **所有覆盖层走 `MainShell` 的 Overlay 栈 + `AnimatedContent`**：阅读器、详情、目录
+  都是栈上一帧，入栈右滑入、出栈右滑出；新增覆盖页要接 `onBack = popOverlay`，
+  并在需要拦截返回的页面用 `AppBackHandler`（commonMain expect/actual）。
+  不接的后果是系统返回直接退到桌面。
 
 ## 已知陷阱
 
@@ -156,13 +162,20 @@ Kotlin 的块注释可嵌套，KDoc 里写 `/reader3/*` 会开启一个未闭合
 网络失败先确认请求到底有没有到达后端（看后端日志），再看客户端状态码；
 `403` 不一定来自业务服务，也可能是链路上的代理/网关按白名单拒绝。
 
-**6. `saveBookGroup` 只回 `"success"`，不回分组实体**
+**6. 系统返回直接退桌面**
+
+Compose 不会自动把系统返回映射到页面栈。每个覆盖层必须：
+栈式页面在 `MainShell` 统一 `AppBackHandler(enabled = overlays.isNotEmpty())`；
+页面内部状态（书架多选、搜索输入等）各自再挂一个更靠近的 `AppBackHandler`。
+早期的表现是「阅读器里按返回直接退出应用」。
+
+**7. `saveBookGroup` 只回 `"success"`，不回分组实体**
 
 新建分组后需要 id（比如「建完直接移动过去」）时，必须回查
 `/getBookGroups` 按名字找。把它声明成 `ApiResult<BookGroup>` 会解码失败，
 表现为「服务端已建组、客户端报错且列表不刷新」。
 
-**7. `encodeDefaults = true` 会把默认值写进请求体**
+**8. `encodeDefaults = true` 会把默认值写进请求体**
 
 `ReaderJson` 开启了 `encodeDefaults`（显式 null 反而被裁掉）。直接序列化完整
 `Book` 去调 `/saveBook`，会带上 `durChapterIndex: 0`、`group: 0`，

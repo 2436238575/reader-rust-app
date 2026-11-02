@@ -34,9 +34,11 @@ kotlin {
             implementation(libs.okhttp.sse)
             implementation(libs.okhttp.logging)
             implementation(libs.coil.network.okhttp)
+            implementation(libs.androidx.activity.compose)
         }
         commonMain.dependencies {
             implementation(libs.androidx.compose.runtime)
+            implementation(libs.androidx.compose.animation)
             implementation(libs.androidx.compose.foundation)
             implementation(libs.androidx.compose.material3)
             implementation(libs.androidx.compose.materialIconsCore)

@@ -1,5 +1,10 @@
 package org.example.reader.ui.shelf
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
@@ -32,7 +37,6 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -67,10 +71,12 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import org.example.reader.core.AppDependencies
 import org.example.reader.core.model.Book
 import org.example.reader.core.model.BookGroup
+import org.example.reader.core.util.AppBackHandler
 import org.example.reader.core.settings.ShelfLayout
 import org.example.reader.core.session.ServerConfig
 import org.example.reader.ui.components.BookCoverThumb
 import org.example.reader.ui.components.BookListRow
+import org.example.reader.ui.components.SelectionBadge
 import org.example.reader.ui.components.EmptyState
 import org.example.reader.ui.components.ErrorState
 import org.example.reader.ui.components.FullScreenLoading
@@ -118,6 +124,8 @@ fun ShelfScreen(
     }
     // 从「发现 / 搜索」加书回来时刷新列表；静默模式不闪加载态
     LaunchedEffect(Unit) { viewModel.refreshSilently() }
+    // 多选时系统返回先退出多选，而不是直接退出应用
+    AppBackHandler(enabled = state.selectionMode) { viewModel.exitSelection() }
 
     Box(modifier = modifier.fillMaxSize().padding(contentPadding)) {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -147,11 +155,6 @@ fun ShelfScreen(
                             Text(if (state.allVisibleSelected) "取消全选" else "全选")
                         }
                     } else {
-                        // 核心图标集没有网格图标，用文字标出「切换目标」比放语义不符的图标更清楚
-                        val targetLabel = if (layout == ShelfLayout.List) "网格" else "列表"
-                        TextButton(onClick = { deps.layout.toggle() }) {
-                            Text(targetLabel, style = MaterialTheme.typography.labelLarge)
-                        }
                         IconButton(onClick = { searchExpanded = !searchExpanded }) {
                             Icon(Icons.Filled.Search, contentDescription = "搜索书架")
                         }
@@ -163,6 +166,17 @@ fun ShelfScreen(
                                 expanded = menuExpanded,
                                 onDismissRequest = { menuExpanded = false },
                             ) {
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            if (layout == ShelfLayout.List) "切换为网格视图" else "切换为列表视图",
+                                        )
+                                    },
+                                    onClick = {
+                                        menuExpanded = false
+                                        deps.layout.toggle()
+                                    },
+                                )
                                 DropdownMenuItem(
                                     text = { Text("选择书籍") },
                                     enabled = state.books.isNotEmpty(),
@@ -247,7 +261,11 @@ fun ShelfScreen(
                 }
             }
 
-            if (state.selectionMode) {
+            AnimatedVisibility(
+                visible = state.selectionMode,
+                enter = slideInVertically { it } + fadeIn(),
+                exit = slideOutVertically { it } + fadeOut(),
+            ) {
                 SelectionBar(
                     hasSelection = state.selectedIds.isNotEmpty(),
                     isWorking = state.isBulkWorking,
@@ -546,7 +564,7 @@ private fun BookList(
                 },
             )
             HorizontalDivider(
-                modifier = Modifier.padding(start = if (selectionMode) 116.dp else 96.dp),
+                modifier = Modifier.padding(start = 96.dp),
                 color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
             )
         }
@@ -623,10 +641,9 @@ private fun ShelfGridCard(
                 requestWidth = 320,
             )
             if (selectionMode) {
-                Checkbox(
-                    checked = selected,
-                    onCheckedChange = null,
-                    modifier = Modifier.align(Alignment.TopStart).padding(2.dp),
+                SelectionBadge(
+                    selected = selected,
+                    modifier = Modifier.align(Alignment.TopStart).padding(6.dp),
                 )
             }
         }

@@ -1,0 +1,156 @@
+# AGENTS.md
+
+面向 AI 编码代理与贡献者的工程约定。**改代码前先读「依赖约束」与「已知陷阱」两节**，
+里面的每条都是实际踩过的，违反会浪费整轮调试。
+
+## 项目定位
+
+- 本仓库是 `reader-rust` 的原生 Android 客户端；后端（Rust）与 Web 前端（Vue）都在
+  同级目录 `../reader-rust`。
+- **功能基准是 `../reader-rust/frontend`**。产品能力以它为准，不自行增删；
+  改功能前先看对应 Vue 组件在做什么，而不是凭"阅读 App 该有什么"推断。
+- 后端是单用户、自托管服务：没有注册、没有多租户、没有权限角色。
+- 界面语言为简体中文。
+
+## 常用命令
+
+```bash
+./gradlew :androidApp:assembleDebug        # 构建 APK
+./gradlew :shared:testAndroidHostTest      # 单元测试（host JVM）
+./gradlew :androidApp:installDebug         # 装到已连接设备
+```
+
+## 代码结构
+
+```
+shared/src/commonMain/kotlin/org/example/reader/
+  core/model/      @Serializable DTO，字段对齐后端结构体
+  core/net/        HttpClient 接口、ReaderApi、ApiResult
+  core/session/    ServerConfig 与 AuthState
+  core/settings/   KeyValueStore 抽象 + SettingsKeys
+  ui/theme/        Material 3 色板/字体/阅读器主题预设
+  ui/nav/          主框架（底部导航 + 阅读器覆盖层）
+  ui/<feature>/    每个功能一个包：Screen + ViewModel
+  ui/components/   跨页面复用的状态视图等
+shared/src/androidMain/kotlin/org/example/reader/
+  core/            AppDependencies 装配、OkHttp、Cookie 持久化、SharedPreferences、Coil
+androidApp/        Activity、清单、图标、资源
+```
+
+**依赖方向**：`commonMain` 不得引用 Android API。需要平台能力时，在 `commonMain`
+定义接口（如 `HttpClient`、`KeyValueStore`），实现放 `androidMain`，
+在 `AndroidDependencies` 里装配。
+
+**新增页面**：`ui/<feature>/XxxScreen.kt` + `XxxViewModel.kt`，ViewModel 通过
+`viewModel { XxxViewModel(deps) }` 注入 `AppDependencies`，不要用全局单例。
+
+## 依赖约束
+
+- **Compose 与 Material3 必须成套**：`androidx-compose = 1.12.1` +
+  `androidx-compose-material3 = 1.5.0-alpha22`。旧版 Material3 依赖的 Compose
+  内部 API 在 1.9+ 已被移除，混用不会有编译错误，但运行时抛 `NoSuchMethodError`。
+  升级时两者一起升，先查 Material3 的 POM 依赖哪个 Compose 版本。
+- **material-icons 系列只到 1.7.8**（官方最后一版，之后停发）。核心集
+  `material-icons-core` 不含 `Explore` / `History` / `Visibility` 等常用图标，
+  需要时换图标或改用 `material-icons-extended`（体积较大）。
+- 新增依赖统一写进 `gradle/libs.versions.toml`，不要在子模块里写死版本号。
+- 未使用 Compose Multiplatform 的 `org.jetbrains.compose`，而是直接依赖 androidx
+  产物：两者在 Android 上是同一套类，直接用 androidx 版本更可控。
+
+## 网络与鉴权
+
+- 响应统一是 `{isSuccess, errorMsg, data}`。注意实际取值：成功时 `errorMsg` 是
+  **空字符串**而不是 null；失败时 `data` 通常为 null。解包在 `ApiResult.kt`。
+- **401 由 OkHttp 自带的 `Authenticator` 处理**：静默换令牌后自动重放，
+  同一请求最多重放一次，`/login` 与 `/refreshToken` 的 401 绝不触发刷新。
+  业务层不要再包一层重试，否则会与它叠加成多次请求。
+- **请求体一律用 `@Serializable` DTO + kotlinx.serialization 编码**，不要手拼
+  JSON 字符串（书名/搜索词里的引号反斜杠会漏转义）。
+- **字段名必须对照后端结构体**，不能凭直觉命名。已踩过的两个：
+  - `saveBookProgress` → `index` / `position`（不是 `chapterIndex` / `chapterPos`）
+  - `setBookSource` → `targetBookId`（候选搜索结果的 bookId，不是 `bookSourceId`）
+- **响应体必须在 OkHttp 回调线程读完再 resume**（见「已知陷阱」）。
+- 会话是两枚 HttpOnly Cookie（`reader_access` / `reader_refresh`），由
+  `SharedPrefsCookieJar` 持久化；登录响应 JSON 里的 `accessToken` 不落盘。
+- 服务地址由用户在登录页填写，**要填到 `/reader3` 为止**，且必须与后端
+  `COOKIE_PATH` 前缀一致；子路径部署时形如 `https://example.org/read/reader3`。
+
+## 数据模型要点
+
+这几条语义搞错会导致数据错乱，且界面上看不出来：
+
+- **书籍身份 `bookId`**（形如 `book_<n>`）：稳定，不随换源变化，所有请求都用它。
+- **章节身份 `chapterUrl`**：换源后会变。按 `chapterUrl` 存的东西换源即失效。
+- **分组是位域**：`book.group` 是 bitmask，一本书可同时属于多个分组，
+  `group and groupId != 0` 为命中；`0` 表示未分组。
+- **阅读进度是万分比**：`durChapterPos` / `position` 取值 0–10000，不是 0–1 也不是百分比。
+- **时间戳单位不统一**：后端部分字段是毫秒、部分是秒，用之前先确认来源接口。
+- **`COOKIE_SECURE=auto`** 时，非回环 Host 下发的会话 Cookie 会带 `Secure`，
+  明文 HTTP 下客户端不会回传。调试用回环地址可规避。
+
+## UI 约定
+
+- 严格 Material 3：用 `Scaffold` / `TopAppBar` / `NavigationBar` /
+  `ModalBottomSheet` / `FilterChip` / `ListItem` 等标准组件，不自造样式。
+- 品牌色在 `ui/theme/ReaderTokens.kt`：由应用图标的粉色（`#CF497C`）派生 M3 色板，
+  浅色主题的 `primary` 比图标粉深一档以满足对比度要求。
+- **阅读器正文主题独立于 M3**：8 个纸张预设 + 夜间，定义在
+  `ReaderThemePresets`，与 Web 端 `utils/readerTheme.ts` 一一对应。
+  不要把它合并进 Material 主题。
+- 加载/空/错误三态统一用 `ui/components/StateViews.kt`，不要各页面自己写一套。
+- 列表项点击区域不小于 48dp；中文正文行高要比 Material 默认值略大。
+
+## 已知陷阱
+
+**1. OkHttp + 协程的主线程 I/O**
+
+不能先 `resume` 再读 `body.bytes()`：`enqueue` 的回调只保证响应头到达，body 仍是
+网络流；协程恢复到主线程后再读会抛 `NetworkOnMainThreadException`。
+小响应因为已被完整缓冲所以看不出来，响应一大（比如上千章的目录）必崩，
+而且该异常的 `message` 是 `null`，不打异常类名根本定位不到。
+正确做法见 `CallAwait.kt` 的 `awaitBuffered`：在 `onResponse` 里读完再 resume。
+
+**2. Cookie 持久化会丢域名**
+
+`Cookie.toString()` 对 hostOnly Cookie 不输出 `domain=`，只存这个串，回读时
+`Cookie.parse` 会退化成基准 URL 的域名，Cookie 就绑错主机、请求不再携带。
+表现为"杀进程后掉登录态"。落盘格式必须把 `cookie.domain` 单独存一列，
+回读时用它构造基准 URL。
+
+**3. 图片请求不走会话客户端就全是 401**
+
+`/reader3/image/<id>` 需要会话 Cookie。Coil 默认用自己的 OkHttpClient，
+必须通过 `OkHttpNetworkFetcherFactory(callFactory = { http.callFactory })`
+复用同一个实例，并使用 `deps.imageLoader`。
+
+**4. 块注释里不能直接写路径通配**
+
+Kotlin 的块注释可嵌套，KDoc 里写 `/reader3/*` 会开启一个未闭合的嵌套注释，
+报错位置在文件末尾的 `Unclosed comment`，与真正的笔误位置相差很远。
+
+**5. 分类错判**
+
+网络失败先确认请求到底有没有到达后端（看后端日志），再看客户端状态码；
+`403` 不一定来自业务服务，也可能是链路上的代理/网关按白名单拒绝。
+
+## 不做的事
+
+这些是明确的产品决策，不要当遗漏去"补"：
+
+| 项 | 理由 |
+|---|---|
+| PWA 安装、Service Worker、更新提示 | 本身就是原生 App |
+| 桌面键盘快捷键 | 无物理键盘；可选做音量键翻页替代 |
+| 顶部导航栏、汉堡菜单、响应式断点 | Android 用 `NavigationBar` 与原生断点 |
+| 阅读器内书架侧栏 | 移动端横向空间有限，换书走「返回书架 → 选书」 |
+| 桌面双页翻页（<960dp） | Web 端在窄屏同样禁用 |
+
+## 文档地图
+
+| 文档 | 读者 | 内容 |
+|---|---|---|
+| `README.md` | 使用者 / 新贡献者 | 项目定位、技术栈、构建方式、连接后端、目录结构 |
+| `AGENTS.md`（本文件） | AI 代理 / 贡献者 | 工程约定、依赖约束、数据语义、已知陷阱 |
+| `todo.md`（本地，不进 git） | 维护者 | 对齐 Vue 前端的功能清单与进度 |
+
+接口契约看 `../reader-rust/docs/api/`；后端行为与部署细节看 `../reader-rust/AGENTS.md`。

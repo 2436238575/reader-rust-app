@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  网络安全策略。
+
+  debug 构建允许明文 HTTP（AVD 上用 http://10.0.2.2:8080 访问本机 reader-rust，
+  或局域网 HTTP 部署）；release 只允许 HTTPS。
+
+  注意：后端 COOKIE_SECURE=auto 时，非回环 Host 会给会话 Cookie 加 Secure，
+  明文 HTTP 下浏览器/OkHttp 不会回传该 Cookie。因此明文调试请走回环地址
+  （10.0.2.2 / 127.0.0.1），或在后端显式设 COOKIE_SECURE=false。
+-->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">10.0.2.2</domain>
+        <domain includeSubdomains="true">127.0.0.1</domain>
+        <domain includeSubdomains="true">localhost</domain>
+        <!-- 局域网自建部署 -->
+        <domain includeSubdomains="true">192.168.100.5</domain>
+        <domain includeSubdomains="true">192.168.0.113</domain>
+    </domain-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

@@ -28,6 +28,8 @@ shared/src/commonMain/kotlin/org/example/reader/
   core/net/        HttpClient 接口、ReaderApi、ApiResult
   core/session/    ServerConfig 与 AuthState
   core/settings/   KeyValueStore 抽象 + SettingsKeys
+  core/recent/     最近阅读本地镜像（JSON 落在 KeyValueStore）
+  core/util/       expect/actual 的平台能力（时间戳等）
   ui/theme/        Material 3 色板/字体/阅读器主题预设
   ui/nav/          主框架（底部导航 + 阅读器覆盖层）
   ui/<feature>/    每个功能一个包：Screen + ViewModel
@@ -74,6 +76,10 @@ androidApp/        Activity、清单、图标、资源
   `SharedPrefsCookieJar` 持久化；登录响应 JSON 里的 `accessToken` 不落盘。
 - 服务地址由用户在登录页填写，**要填到 `/reader3` 为止**，且必须与后端
   `COOKIE_PATH` 前缀一致；子路径部署时形如 `https://example.org/read/reader3`。
+- **SSE 端点**（`/searchBookMultiSSE` 等）的帧约定：默认帧是业务 JSON
+  （搜索是 `{lastIndex, data:[SearchBook]}`），命名 `error` 帧是 `{errorMsg}`，
+  命名 `end` 帧收尾。`error` 帧与传输层失败都表现为 error 事件，必须区分：
+  前者要展示 `errorMsg`，后者才是「连接中断」。见 `SearchViewModel`。
 
 ## 数据模型要点
 
@@ -87,6 +93,9 @@ androidApp/        Activity、清单、图标、资源
 - **时间戳单位不统一**：后端部分字段是毫秒、部分是秒，用之前先确认来源接口。
 - **`COOKIE_SECURE=auto`** 时，非回环 Host 下发的会话 Cookie 会带 `Secure`，
   明文 HTTP 下客户端不会回传。调试用回环地址可规避。
+- **最近阅读是本地镜像**：`RecentBooksStore` 存「整本 Book + `recentReadAt`」，
+  按 `bookId` 去重、时间倒序、上限 100；阅读器在**章节内容成功后**写入。
+  跨端同步（后端 userdata 文档）还没做，不要假设换设备能看到。
 
 ## UI 约定
 
@@ -99,6 +108,11 @@ androidApp/        Activity、清单、图标、资源
   不要把它合并进 Material 主题。
 - 加载/空/错误三态统一用 `ui/components/StateViews.kt`，不要各页面自己写一套。
 - 列表项点击区域不小于 48dp；中文正文行高要比 Material 默认值略大。
+- 底部导航 5 项：书架 / 发现 / 搜索 / 最近 / 我的。搜索是独立入口，
+  不要塞回书架的本地过滤里（书架的放大镜只过滤当前书架）。
+- 书籍卡片与列表行是共享组件：`BookListRow`（书架、最近）、
+  `BookResultGrid` + `BookResultCard`（发现、搜索）。加新列表页先复用，
+  不要在页面里复制一份布局。
 
 ## 已知陷阱
 
@@ -132,6 +146,13 @@ Kotlin 的块注释可嵌套，KDoc 里写 `/reader3/*` 会开启一个未闭合
 
 网络失败先确认请求到底有没有到达后端（看后端日志），再看客户端状态码；
 `403` 不一定来自业务服务，也可能是链路上的代理/网关按白名单拒绝。
+
+**6. `encodeDefaults = true` 会把默认值写进请求体**
+
+`ReaderJson` 开启了 `encodeDefaults`（显式 null 反而被裁掉）。直接序列化完整
+`Book` 去调 `/saveBook`，会带上 `durChapterIndex: 0`、`group: 0`，
+把已在架书籍的阅读进度覆盖成 0。写请求体要用最小字段 DTO（`SaveBookRequest`），
+不要复用响应模型。
 
 ## 不做的事
 

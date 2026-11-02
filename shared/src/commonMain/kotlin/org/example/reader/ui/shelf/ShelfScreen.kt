@@ -1,9 +1,7 @@
 package org.example.reader.ui.shelf
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -13,7 +11,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -22,7 +19,6 @@ import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
@@ -45,23 +41,21 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import coil3.compose.AsyncImage
 import org.example.reader.core.AppDependencies
 import org.example.reader.core.model.Book
 import org.example.reader.core.model.BookGroup
 import org.example.reader.core.session.ServerConfig
+import org.example.reader.ui.components.BookCoverThumb
+import org.example.reader.ui.components.BookListRow
 import org.example.reader.ui.components.EmptyState
 import org.example.reader.ui.components.ErrorState
 import org.example.reader.ui.components.FullScreenLoading
-import org.example.reader.ui.util.coverUrl
 import org.example.reader.ui.util.formatProgress
 import org.example.reader.ui.util.progressPercent
 import kotlin.math.roundToInt
@@ -221,7 +215,7 @@ private fun BookList(
             )
         }
         items(books, key = { it.bookId }) { book ->
-            BookListItem(
+            BookListRow(
                 book = book,
                 serverConfig = serverConfig,
                 imageLoader = imageLoader,
@@ -230,94 +224,6 @@ private fun BookList(
             HorizontalDivider(
                 modifier = Modifier.padding(start = 88.dp),
                 color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
-            )
-        }
-    }
-}
-
-/**
- * 列表条目：封面缩略图 + 四行信息（书名 / 作者·来源 / 读至 / 进度）。
- *
- * 用自绘 Row 而非 M3 `ListItem`：需要「进度条 + 百分比 + 未读」横排在底部，
- * `ListItem` 的三段式插槽放不下。
- */
-@Composable
-private fun BookListItem(
-    book: Book,
-    serverConfig: ServerConfig?,
-    imageLoader: coil3.ImageLoader,
-    onClick: () -> Unit,
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 10.dp),
-    ) {
-        CoverThumbnail(
-            book = book,
-            serverConfig = serverConfig,
-            imageLoader = imageLoader,
-            modifier = Modifier.size(width = 56.dp, height = 74.dp),
-        )
-        Spacer(Modifier.width(12.dp))
-        Column(modifier = Modifier.fillMaxWidth()) {
-            Text(
-                text = book.name,
-                style = MaterialTheme.typography.bodyLarge,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Spacer(Modifier.height(2.dp))
-            Text(
-                text = buildString {
-                    append(book.author.ifBlank { "佚名" })
-                    val origin = book.originName
-                    if (!origin.isNullOrBlank()) append(" · ").append(origin)
-                },
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Spacer(Modifier.height(4.dp))
-            Text(
-                text = book.durChapterTitle?.takeIf { it.isNotBlank() }
-                    ?.let { "读至 $it" }
-                    ?: book.latestChapterTitle?.takeIf { it.isNotBlank() }?.let { "最新 $it" }
-                    ?: "尚未开始阅读",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Spacer(Modifier.height(6.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                LinearProgressIndicator(
-                    progress = { progressPercent(book) },
-                    modifier = Modifier.weight(1f).height(3.dp),
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    text = "${(progressPercent(book) * 100).roundToInt()}%",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Spacer(Modifier.height(4.dp))
-            Text(
-                text = buildString {
-                    append(formatProgress(book))
-                    if (book.cachedChapterCount > 0) append(" · 已缓存 ${book.cachedChapterCount} 章")
-                    val unread = book.totalChapterNum - (book.durChapterIndex + 1)
-                    if (book.totalChapterNum > 0 && unread > 0) {
-                        append(" · 未读 ${if (unread > 99) "99+" else unread}")
-                    }
-                },
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
             )
         }
     }
@@ -366,7 +272,7 @@ private fun BookCard(
     onClick: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)) {
-        CoverThumbnail(
+        BookCoverThumb(
             book = book,
             serverConfig = serverConfig,
             imageLoader = imageLoader,
@@ -401,42 +307,5 @@ private fun BookCard(
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
         )
-    }
-}
-
-/** 封面（网格与列表共用）。无封面时用书名前几字做占位，避免空白块。 */
-@Composable
-private fun CoverThumbnail(
-    book: Book,
-    serverConfig: ServerConfig?,
-    imageLoader: coil3.ImageLoader,
-    modifier: Modifier = Modifier,
-    cornerRadius: androidx.compose.ui.unit.Dp = 6.dp,
-    requestWidth: Int = 160,
-) {
-    Box(
-        modifier = modifier
-            .clip(RoundedCornerShape(cornerRadius))
-            .background(MaterialTheme.colorScheme.surfaceContainerHigh),
-    ) {
-        val cover = book.coverUrl(serverConfig, width = requestWidth)
-        if (cover != null) {
-            AsyncImage(
-                model = cover,
-                imageLoader = imageLoader,
-                contentDescription = book.name,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize(),
-            )
-        } else {
-            Text(
-                text = book.name.take(4),
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.align(Alignment.Center).padding(4.dp),
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
     }
 }

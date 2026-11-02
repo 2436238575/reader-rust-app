@@ -238,3 +238,16 @@ data class AiServerModelStatus(
     @SerialName("speechReady") val speechReady: Boolean = false,
     @SerialName("agentReady") val agentReady: Boolean = false,
 )
+
+/**
+ * 最近阅读条目。
+ *
+ * 前端把整本 Book 存进 localStorage 并额外记 `recentReadAt`；这里同构，
+ * 保证「换源后书架数据变了、最近记录仍能显示当时的书名/封面」。
+ */
+@Serializable
+data class RecentBook(
+    val book: Book,
+    /** 最近一次阅读时间（毫秒），排序键。 */
+    val recentReadAt: Long = 0,
+)

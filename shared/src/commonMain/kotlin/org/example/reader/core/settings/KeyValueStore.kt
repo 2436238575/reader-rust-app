@@ -26,6 +26,9 @@ object SettingsKeys {
     /** 书架视图形态：`list`（默认，信息密度高）或 `grid`。 */
     const val SHELF_LAYOUT = "shelf_layout"
 
+    /** 最近阅读列表（JSON 数组，最多 100 条）。 */
+    const val RECENT_BOOKS = "recent_books"
+
     // 阅读器排版
     const val READER_FONT_SIZE = "reader_font_size"
     const val READER_LINE_HEIGHT = "reader_line_height"

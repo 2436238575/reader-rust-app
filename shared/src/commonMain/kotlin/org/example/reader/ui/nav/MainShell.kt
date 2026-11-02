@@ -5,8 +5,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.DateRange
-import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -25,12 +26,15 @@ import org.example.reader.core.AppDependencies
 import org.example.reader.ui.components.EmptyState
 import org.example.reader.ui.explore.ExploreScreen
 import org.example.reader.ui.reader.ReaderScreen
+import org.example.reader.ui.recent.RecentScreen
+import org.example.reader.ui.search.SearchScreen
 import org.example.reader.ui.shelf.ShelfScreen
 
-/** 底部导航项。顺序与 Web 端顶栏一致：书架 / 发现 / 最近 / 我的。 */
+/** 底部导航项。书架 / 发现 / 搜索 / 最近 / 我的（搜索是独立入口，不挤在书架里）。 */
 private enum class MainTab(val label: String, val icon: ImageVector) {
     Shelf("书架", Icons.AutoMirrored.Filled.List),
-    Explore("发现", Icons.Filled.Search),
+    Explore("发现", Icons.Filled.Star),
+    Search("搜索", Icons.Filled.Search),
     Recent("最近", Icons.Filled.DateRange),
     Profile("我的", Icons.Filled.Person),
 }
@@ -84,9 +88,15 @@ fun MainShell(deps: AppDependencies, modifier: Modifier = Modifier) {
                     contentPadding = padding,
                     onOpenBook = { openBookId = it },
                 )
-                MainTab.Recent -> EmptyState(
-                    message = "最近阅读开发中",
-                    modifier = Modifier.fillMaxSize(),
+                MainTab.Search -> SearchScreen(
+                    deps = deps,
+                    contentPadding = padding,
+                    onOpenBook = { openBookId = it },
+                )
+                MainTab.Recent -> RecentScreen(
+                    deps = deps,
+                    contentPadding = padding,
+                    onOpenBook = { openBookId = it },
                 )
                 MainTab.Profile -> EmptyState(
                     message = "设置页开发中",

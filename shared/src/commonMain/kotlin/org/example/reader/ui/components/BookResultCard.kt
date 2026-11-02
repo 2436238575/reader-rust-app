@@ -49,6 +49,8 @@ fun BookResultCard(
     onOpen: () -> Unit,
     onAdd: () -> Unit,
     modifier: Modifier = Modifier,
+    /** 命中书源名；多源搜索时展示，便于判断来源。 */
+    originName: String? = null,
 ) {
     Column(modifier = modifier.fillMaxWidth()) {
         Box(
@@ -106,7 +108,10 @@ fun BookResultCard(
             overflow = TextOverflow.Ellipsis,
         )
         Text(
-            text = author.ifBlank { "佚名" },
+            text = buildString {
+                append(author.ifBlank { "佚名" })
+                if (!originName.isNullOrBlank()) append(" · ").append(originName)
+            },
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,

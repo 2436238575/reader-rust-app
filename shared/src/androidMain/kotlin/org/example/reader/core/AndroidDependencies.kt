@@ -7,6 +7,7 @@ import coil3.request.crossfade
 import org.example.reader.core.net.OkHttpClientHolder
 import org.example.reader.core.net.ReaderApi
 import org.example.reader.core.net.SharedPrefsCookieJar
+import org.example.reader.core.recent.RecentBooksStore
 import org.example.reader.core.session.AuthState
 import org.example.reader.core.session.ServerConfig
 import org.example.reader.core.session.SessionStore
@@ -40,6 +41,8 @@ class AndroidDependencies(context: Context) : AppDependencies {
     )
 
     override val api = ReaderApi(http)
+
+    override val recentBooks = RecentBooksStore(settings)
 
     override val imageLoader: ImageLoader = ImageLoader.Builder(appContext)
         .components {

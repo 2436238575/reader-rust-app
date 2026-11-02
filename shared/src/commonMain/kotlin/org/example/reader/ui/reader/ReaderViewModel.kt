@@ -11,6 +11,7 @@ import org.example.reader.core.AppDependencies
 import org.example.reader.core.model.Book
 import org.example.reader.core.model.BookChapter
 import org.example.reader.core.net.ApiResult
+import org.example.reader.core.util.nowMillis
 
 data class ReaderUiState(
     val isLoading: Boolean = true,
@@ -99,6 +100,16 @@ class ReaderViewModel(
                             paragraphs = paragraphs,
                             isEdited = result.value.edited,
                         )
+                    }
+                    // 最近阅读以「实际读到哪一章」为准（Web 端同样在章节落定后记录）
+                    val book = _state.value.book?.copy(
+                        durChapterIndex = index,
+                        durChapterTitle = chapter.title,
+                        durChapterTime = nowMillis(),
+                    )
+                    if (book != null) {
+                        _state.update { it.copy(book = book) }
+                        deps.recentBooks.record(book)
                     }
                     persistProgress(index, chapter)
                 }

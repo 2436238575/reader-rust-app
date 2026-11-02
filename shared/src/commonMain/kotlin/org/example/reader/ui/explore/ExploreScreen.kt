@@ -13,11 +13,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.GridItemSpan
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.itemsIndexed
-import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
@@ -41,23 +36,18 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import coil3.ImageLoader
 import org.example.reader.core.AppDependencies
 import org.example.reader.core.model.ExploreKind
-import org.example.reader.core.model.SearchBook
-import org.example.reader.core.session.ServerConfig
-import org.example.reader.ui.components.BookResultCard
+import org.example.reader.ui.components.BookResultGrid
 import org.example.reader.ui.components.EmptyState
 import org.example.reader.ui.components.ErrorState
 import org.example.reader.ui.components.FullScreenLoading
-import org.example.reader.ui.util.coverUrl
 
 /**
  * 发现页（书海）。
@@ -157,13 +147,23 @@ fun ExploreScreen(
                 )
 
                 else -> BookResultGrid(
-                    state = state,
+                    books = state.books,
+                    shelfIds = state.shelfIds,
+                    addingIds = state.addingIds,
                     serverConfig = serverConfig,
                     imageLoader = deps.imageLoader,
                     onOpenBook = onOpenBook,
                     onAddToShelf = viewModel::addToShelf,
+                    canLoadMore = state.hasMore,
                     onLoadMore = viewModel::loadMore,
-                    onRetry = viewModel::retry,
+                    footer = {
+                        GridFooter(
+                            isLoading = state.isLoading,
+                            hasMore = state.hasMore,
+                            error = state.error,
+                            onRetry = viewModel::retry,
+                        )
+                    },
                 )
             }
         }
@@ -205,64 +205,6 @@ private fun ExploreKindRow(
                     label = { Text(kind.title) },
                 )
             }
-        }
-    }
-}
-
-@Composable
-private fun BookResultGrid(
-    state: ExploreUiState,
-    serverConfig: ServerConfig?,
-    imageLoader: ImageLoader,
-    onOpenBook: (String) -> Unit,
-    onAddToShelf: (SearchBook) -> Unit,
-    onLoadMore: () -> Unit,
-    onRetry: () -> Unit,
-) {
-    val gridState = rememberLazyGridState()
-
-    // 距末尾 6 个以内就预取下一页。books.size 变化时重启 effect，
-    // 这样「首屏没铺满、滚动事件永不触发」的情况下也会自动链式补页。
-    LaunchedEffect(gridState, state.books.size, state.hasMore) {
-        snapshotFlow { gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1 }
-            .collect { lastVisible ->
-                if (state.hasMore && lastVisible >= state.books.size - 6) onLoadMore()
-            }
-    }
-
-    LazyVerticalGrid(
-        columns = GridCells.Adaptive(minSize = 104.dp),
-        state = gridState,
-        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 16.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-        modifier = Modifier.fillMaxSize(),
-    ) {
-        itemsIndexed(
-            items = state.books,
-            // 同一本书可能在不同页重复出现，用下标兜住 key 冲突
-            key = { index, book -> "${book.bookSourceId}-${book.bookId}-$index" },
-        ) { _, book ->
-            BookResultCard(
-                name = book.name,
-                author = book.author,
-                cover = book.coverUrl(serverConfig, width = 320),
-                imageLoader = imageLoader,
-                added = book.bookId in state.shelfIds,
-                adding = book.bookId in state.addingIds,
-                onOpen = {
-                    if (book.bookId.isNotBlank()) onOpenBook(book.bookId)
-                },
-                onAdd = { onAddToShelf(book) },
-            )
-        }
-        item(span = { GridItemSpan(maxLineSpan) }) {
-            GridFooter(
-                isLoading = state.isLoading,
-                hasMore = state.hasMore,
-                error = state.error,
-                onRetry = onRetry,
-            )
         }
     }
 }

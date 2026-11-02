@@ -4,10 +4,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -19,7 +17,6 @@ import org.example.reader.core.model.BookSourceSummary
 import org.example.reader.core.model.SearchBook
 import org.example.reader.core.net.ApiResult
 import org.example.reader.core.net.ReaderJson
-import org.example.reader.core.net.SaveBookRequest
 import org.example.reader.core.net.SseEvent
 
 /** 搜索范围。只有一个启用书源时强制按「全部」处理（等价于单源）。 */
@@ -43,7 +40,6 @@ data class SearchUiState(
     val failed: Boolean = false,
     val errorMessage: String? = null,
     val shelfIds: Set<String> = emptySet(),
-    val addingIds: Set<String> = emptySet(),
 ) {
     val enabledSources: List<BookSourceSummary>
         get() = sources
@@ -77,9 +73,6 @@ class SearchViewModel(private val deps: AppDependencies) : ViewModel() {
     private val _state = MutableStateFlow(SearchUiState())
     val state: StateFlow<SearchUiState> = _state.asStateFlow()
 
-    private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 4)
-    val messages = _messages.asSharedFlow()
-
     private var searchJob: Job? = null
 
     init {
@@ -87,6 +80,11 @@ class SearchViewModel(private val deps: AppDependencies) : ViewModel() {
             refreshShelfIds()
             loadSources()
         }
+    }
+
+    /** 详情页加书返回后刷新角标。 */
+    fun refreshShelfState() {
+        viewModelScope.launch { refreshShelfIds() }
     }
 
     private suspend fun refreshShelfIds() {
@@ -246,36 +244,6 @@ class SearchViewModel(private val deps: AppDependencies) : ViewModel() {
         }
         if (fresh.isEmpty()) return
         _state.update { it.copy(results = it.results + fresh) }
-    }
-
-    fun addToShelf(book: SearchBook) {
-        val bookId = book.bookId
-        val state = _state.value
-        if (bookId.isBlank() || bookId in state.addingIds || bookId in state.shelfIds) return
-        _state.update { it.copy(addingIds = it.addingIds + bookId) }
-        viewModelScope.launch {
-            val result = deps.api.saveBook(
-                SaveBookRequest(
-                    bookId = bookId,
-                    bookSourceId = book.bookSourceId,
-                    name = book.name,
-                    author = book.author,
-                    bookUrl = book.bookUrl,
-                    origin = book.origin,
-                    coverUrl = book.coverUrl,
-                ),
-            )
-            _state.update { it.copy(addingIds = it.addingIds - bookId) }
-            when (result) {
-                is ApiResult.Success -> {
-                    val savedId = result.value.bookId.ifBlank { bookId }
-                    _state.update { it.copy(shelfIds = it.shelfIds + savedId) }
-                    _messages.tryEmit("「${book.name}」已加入书架")
-                }
-
-                is ApiResult.Failure -> _messages.tryEmit(result.message)
-            }
-        }
     }
 
     private fun parseErrorMessage(raw: String): String? = try {

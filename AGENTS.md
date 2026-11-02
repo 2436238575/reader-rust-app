@@ -27,11 +27,11 @@ shared/src/commonMain/kotlin/org/example/reader/
   core/model/      @Serializable DTO，字段对齐后端结构体
   core/net/        HttpClient 接口、ReaderApi、ApiResult
   core/session/    ServerConfig 与 AuthState
-  core/settings/   KeyValueStore 抽象 + SettingsKeys
+  core/settings/   KeyValueStore 抽象 + SettingsKeys + LayoutPreference（列表/网格全局偏好）
   core/recent/     最近阅读本地镜像（JSON 落在 KeyValueStore）
   core/util/       expect/actual 的平台能力（时间戳等）
   ui/theme/        Material 3 色板/字体/阅读器主题预设
-  ui/nav/          主框架（底部导航 + 阅读器覆盖层）
+  ui/nav/          主框架（底部导航 + 阅读器 / 详情 / 目录覆盖层）
   ui/<feature>/    每个功能一个包：Screen + ViewModel
   ui/components/   跨页面复用的状态视图等
 shared/src/androidMain/kotlin/org/example/reader/
@@ -93,6 +93,9 @@ androidApp/        Activity、清单、图标、资源
 - **时间戳单位不统一**：后端部分字段是毫秒、部分是秒，用之前先确认来源接口。
 - **`COOKIE_SECURE=auto`** 时，非回环 Host 下发的会话 Cookie 会带 `Secure`，
   明文 HTTP 下客户端不会回传。调试用回环地址可规避。
+- **分组批量语义**：`/saveBookGroupId` 是**单本**「设置分组」（`groupId=0` 清空）；
+  `/addBookGroupMulti` / `removeBookGroupMulti` 是位域 OR/AND-NOT，不是替换。
+  「批量移动」要逐本调 `saveBookGroupId`，否则会变成「加组」而不是「移到该组」。
 - **最近阅读是本地镜像**：`RecentBooksStore` 存「整本 Book + `recentReadAt`」，
   按 `bookId` 去重、时间倒序、上限 100；阅读器在**章节内容成功后**写入。
   跨端同步（后端 userdata 文档）还没做，不要假设换设备能看到。
@@ -113,6 +116,12 @@ androidApp/        Activity、清单、图标、资源
 - 书籍卡片与列表行是共享组件：`BookListRow`（书架、最近）、
   `BookResultGrid` + `BookResultCard`（发现、搜索）。加新列表页先复用，
   不要在页面里复制一份布局。
+- **详情与目录都是独立页面**，不是弹层/底部面板。详情只放书籍元信息；
+  目录在 `ui/catalog/`，详情与阅读器共用，靠 `onSelectChapter(原始下标)` 回传。
+- 书架交互：点击阅读、长按进详情；多选走顶栏「更多 → 选择书籍」，
+  不要在长按上再叠多选手势。
+- 列表/网格是全局偏好（`deps.layout`），发现与搜索结果必须跟随，
+  不要各自维护一份视图状态。
 
 ## 已知陷阱
 
@@ -147,7 +156,13 @@ Kotlin 的块注释可嵌套，KDoc 里写 `/reader3/*` 会开启一个未闭合
 网络失败先确认请求到底有没有到达后端（看后端日志），再看客户端状态码；
 `403` 不一定来自业务服务，也可能是链路上的代理/网关按白名单拒绝。
 
-**6. `encodeDefaults = true` 会把默认值写进请求体**
+**6. `saveBookGroup` 只回 `"success"`，不回分组实体**
+
+新建分组后需要 id（比如「建完直接移动过去」）时，必须回查
+`/getBookGroups` 按名字找。把它声明成 `ApiResult<BookGroup>` 会解码失败，
+表现为「服务端已建组、客户端报错且列表不刷新」。
+
+**7. `encodeDefaults = true` 会把默认值写进请求体**
 
 `ReaderJson` 开启了 `encodeDefaults`（显式 null 反而被裁掉）。直接序列化完整
 `Book` 去调 `/saveBook`，会带上 `durChapterIndex: 0`、`group: 0`，

@@ -1,6 +1,7 @@
 package org.example.reader.ui.components
 
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -9,6 +10,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -30,6 +32,7 @@ import kotlin.math.roundToInt
  * 书架、最近阅读共用。`trailing` 用于放行尾动作（最近阅读的删除按钮）。
  * 不用 M3 `ListItem`：底部要横排「进度条 + 百分比 + 缓存/未读」，三段式插槽放不下。
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun BookListRow(
     book: Book,
@@ -38,19 +41,26 @@ fun BookListRow(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     trailing: (@Composable () -> Unit)? = null,
+    /** 多选模式：行首显示勾选框，点击整行切换选中，不再进详情/阅读。 */
+    selectionMode: Boolean = false,
+    selected: Boolean = false,
+    onLongClick: (() -> Unit)? = null,
 ) {
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(start = 16.dp, end = 8.dp, top = 10.dp, bottom = 10.dp),
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+            .padding(start = if (selectionMode) 4.dp else 16.dp, end = 8.dp, top = 10.dp, bottom = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        if (selectionMode) {
+            Checkbox(checked = selected, onCheckedChange = null)
+        }
         BookCoverThumb(
             book = book,
             serverConfig = serverConfig,
             imageLoader = imageLoader,
-            modifier = Modifier.size(width = 56.dp, height = 74.dp),
+            modifier = Modifier.size(width = 64.dp, height = 88.dp),
         )
         Spacer(Modifier.width(12.dp))
         Column(modifier = Modifier.weight(1f)) {

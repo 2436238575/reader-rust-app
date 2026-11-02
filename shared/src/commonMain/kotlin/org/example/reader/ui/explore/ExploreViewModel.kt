@@ -2,10 +2,8 @@ package org.example.reader.ui.explore
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -14,7 +12,6 @@ import org.example.reader.core.model.BookSourceSummary
 import org.example.reader.core.model.ExploreKind
 import org.example.reader.core.model.SearchBook
 import org.example.reader.core.net.ApiResult
-import org.example.reader.core.net.SaveBookRequest
 
 /**
  * 发现页状态。
@@ -34,7 +31,6 @@ data class ExploreUiState(
     val page: Int = 1,
     val hasMore: Boolean = true,
     val error: String? = null,
-    val addingIds: Set<String> = emptySet(),
     val shelfIds: Set<String> = emptySet(),
 ) {
     val exploreSources: List<BookSourceSummary>
@@ -60,10 +56,6 @@ class ExploreViewModel(private val deps: AppDependencies) : ViewModel() {
     private val _state = MutableStateFlow(ExploreUiState())
     val state: StateFlow<ExploreUiState> = _state.asStateFlow()
 
-    /** Toast 等价物：入架成功/失败的一次性提示。 */
-    private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 4)
-    val messages = _messages.asSharedFlow()
-
     /**
      * 请求代际。切源/切分类后自增，旧请求回来时直接丢弃——
      * 否则「加载中切分类」会把上一个分类的结果混进新列表。
@@ -75,6 +67,11 @@ class ExploreViewModel(private val deps: AppDependencies) : ViewModel() {
             refreshShelfIds()
             loadSources()
         }
+    }
+
+    /** 详情页加书返回后刷新角标。 */
+    fun refreshShelfState() {
+        viewModelScope.launch { refreshShelfIds() }
     }
 
     /** 已入架集合：卡片据此显示「已在书架」，不必等用户手动加一本才翻转。 */
@@ -230,33 +227,4 @@ class ExploreViewModel(private val deps: AppDependencies) : ViewModel() {
         }
     }
 
-    fun addToShelf(book: SearchBook) {
-        val bookId = book.bookId
-        val s = _state.value
-        if (bookId.isBlank() || bookId in s.addingIds || bookId in s.shelfIds) return
-        _state.update { it.copy(addingIds = it.addingIds + bookId) }
-        viewModelScope.launch {
-            val result = deps.api.saveBook(
-                SaveBookRequest(
-                    bookId = bookId,
-                    bookSourceId = book.bookSourceId,
-                    name = book.name,
-                    author = book.author,
-                    bookUrl = book.bookUrl,
-                    origin = book.origin,
-                    coverUrl = book.coverUrl,
-                ),
-            )
-            _state.update { it.copy(addingIds = it.addingIds - bookId) }
-            when (result) {
-                is ApiResult.Success -> {
-                    val savedId = result.value.bookId.ifBlank { bookId }
-                    _state.update { it.copy(shelfIds = it.shelfIds + savedId) }
-                    _messages.tryEmit("「${book.name}」已加入书架")
-                }
-
-                is ApiResult.Failure -> _messages.tryEmit(result.message)
-            }
-        }
-    }
 }

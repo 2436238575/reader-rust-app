@@ -60,12 +60,18 @@ fun ReaderScreen(
     bookId: String,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
+    /** 指定起始章（详情页点目录进入）；null 表示续读。 */
+    startIndex: Int? = null,
 ) {
     val viewModel: ReaderViewModel = viewModel(key = "reader-$bookId") {
         ReaderViewModel(deps, bookId)
     }
     val state by viewModel.state.collectAsStateWithLifecycle()
     val listState = rememberLazyListState()
+
+    LaunchedEffect(startIndex) {
+        if (startIndex != null) viewModel.openAt(startIndex)
+    }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
     // 换章后回到顶部，否则新章正文停在上一章的滚动位置。

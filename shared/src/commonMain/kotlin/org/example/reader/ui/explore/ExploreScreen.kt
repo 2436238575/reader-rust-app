@@ -25,8 +25,6 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -43,11 +41,13 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import org.example.reader.core.AppDependencies
+import org.example.reader.core.model.Book
 import org.example.reader.core.model.ExploreKind
 import org.example.reader.ui.components.BookResultGrid
 import org.example.reader.ui.components.EmptyState
 import org.example.reader.ui.components.ErrorState
 import org.example.reader.ui.components.FullScreenLoading
+import org.example.reader.ui.util.toBook
 
 /**
  * 发现页（书海）。
@@ -60,21 +60,19 @@ import org.example.reader.ui.components.FullScreenLoading
 fun ExploreScreen(
     deps: AppDependencies,
     contentPadding: PaddingValues,
-    onOpenBook: (String) -> Unit,
+    onShowDetail: (Book) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val viewModel: ExploreViewModel = viewModel { ExploreViewModel(deps) }
     val state by viewModel.state.collectAsStateWithLifecycle()
     val serverConfig by deps.session.serverConfig.collectAsStateWithLifecycle()
-    val snackbarHostState = remember { SnackbarHostState() }
+    val layout by deps.layout.layout.collectAsStateWithLifecycle()
     var sourceMenuExpanded by remember { mutableStateOf(false) }
 
-    LaunchedEffect(viewModel) {
-        viewModel.messages.collect { snackbarHostState.showSnackbar(it) }
-    }
+    // 从详情页加书回来时刷新「已在书架」角标
+    LaunchedEffect(Unit) { viewModel.refreshShelfState() }
 
-    Box(modifier = modifier.fillMaxSize().padding(contentPadding)) {
-        Column(modifier = Modifier.fillMaxSize()) {
+    Column(modifier = modifier.fillMaxSize().padding(contentPadding)) {
             TopAppBar(
                 title = { Text("发现") },
                 actions = {
@@ -147,13 +145,12 @@ fun ExploreScreen(
                 )
 
                 else -> BookResultGrid(
+                    layout = layout,
                     books = state.books,
                     shelfIds = state.shelfIds,
-                    addingIds = state.addingIds,
                     serverConfig = serverConfig,
                     imageLoader = deps.imageLoader,
-                    onOpenBook = onOpenBook,
-                    onAddToShelf = viewModel::addToShelf,
+                    onSelect = { onShowDetail(it.toBook()) },
                     canLoadMore = state.hasMore,
                     onLoadMore = viewModel::loadMore,
                     footer = {
@@ -168,11 +165,6 @@ fun ExploreScreen(
             }
         }
 
-        SnackbarHost(
-            hostState = snackbarHostState,
-            modifier = Modifier.align(Alignment.BottomCenter),
-        )
-    }
 }
 
 @Composable

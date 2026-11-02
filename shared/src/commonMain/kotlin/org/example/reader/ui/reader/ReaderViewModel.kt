@@ -39,7 +39,12 @@ data class ReaderUiState(
 class ReaderViewModel(
     private val deps: AppDependencies,
     private val bookId: String,
+    /** 从详情页目录进入时指定的起始章；null 表示续读服务端记录的位置。 */
+    private val initialIndex: Int? = null,
 ) : ViewModel() {
+
+    /** 章节还没加载完时先记下目标章，`open()` 落定后直接用。 */
+    private var pendingIndex: Int? = null
 
     private val _state = MutableStateFlow(ReaderUiState())
     val state: StateFlow<ReaderUiState> = _state.asStateFlow()
@@ -69,7 +74,10 @@ class ReaderViewModel(
                         }
                         return@launch
                     }
-                    val startIndex = book.durChapterIndex.coerceIn(0, chapters.lastIndex)
+                    val requested = pendingIndex ?: initialIndex
+                    pendingIndex = null
+                    val startIndex = (requested ?: book.durChapterIndex)
+                        .coerceIn(0, chapters.lastIndex)
                     _state.update {
                         it.copy(isLoading = false, book = book, chapters = chapters, currentIndex = startIndex)
                     }
@@ -124,6 +132,21 @@ class ReaderViewModel(
         if (index !in _state.value.chapters.indices) return
         _state.update { it.copy(showCatalog = false) }
         loadContent(index)
+    }
+
+    /**
+     * 外部（书籍详情页的目录）指定章节。
+     *
+     * 章节列表可能还没回来：先记 pending，由 `open()` 消费；
+     * 已就绪则直接加载。ViewModel 按 bookId 缓存，所以不能只靠构造参数。
+     */
+    fun openAt(index: Int) {
+        val chapters = _state.value.chapters
+        if (chapters.isEmpty()) {
+            pendingIndex = index
+            return
+        }
+        goToChapter(index)
     }
 
     fun nextChapter() = goToChapter(_state.value.currentIndex + 1)

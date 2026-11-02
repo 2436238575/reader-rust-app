@@ -5,6 +5,7 @@ import org.example.reader.core.net.ReaderApi
 import org.example.reader.core.recent.RecentBooksStore
 import org.example.reader.core.session.SessionStore
 import org.example.reader.core.settings.KeyValueStore
+import org.example.reader.core.settings.LayoutPreference
 
 /**
  * 应用依赖容器。
@@ -16,6 +17,9 @@ interface AppDependencies {
     val api: ReaderApi
     val session: SessionStore
     val settings: KeyValueStore
+
+    /** 列表 / 网格偏好：书架切换后，发现与搜索结果立即跟随。 */
+    val layout: LayoutPreference
 
     /**
      * 图片加载器。必须与 API 共用同一个 HTTP 客户端，否则取不到会话 Cookie，

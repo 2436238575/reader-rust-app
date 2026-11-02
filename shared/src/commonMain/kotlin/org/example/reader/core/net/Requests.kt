@@ -116,9 +116,10 @@ data class SetBookSourceRequest(
     val targetBookId: String,
 )
 
+/** 单本书设置分组；`groupId = 0` 表示移出全部分组（后端 `/saveBookGroupId`）。 */
 @Serializable
 data class SaveBookGroupIdRequest(
-    val bookIds: List<String>,
+    val bookId: String,
     val groupId: Long,
 )
 

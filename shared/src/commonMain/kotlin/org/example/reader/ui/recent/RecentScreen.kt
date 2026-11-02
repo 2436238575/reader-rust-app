@@ -31,6 +31,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import org.example.reader.core.AppDependencies
+import org.example.reader.core.model.Book
 import org.example.reader.ui.components.BookListRow
 import org.example.reader.ui.components.EmptyState
 
@@ -46,6 +47,7 @@ fun RecentScreen(
     deps: AppDependencies,
     contentPadding: PaddingValues,
     onOpenBook: (String) -> Unit,
+    onShowDetail: (Book) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val viewModel: RecentViewModel = viewModel { RecentViewModel(deps) }
@@ -97,6 +99,7 @@ fun RecentScreen(
                         serverConfig = serverConfig,
                         imageLoader = deps.imageLoader,
                         onClick = { onOpenBook(book.bookId) },
+                        onLongClick = { onShowDetail(book) },
                         trailing = {
                             IconButton(onClick = { viewModel.remove(book.bookId) }) {
                                 Icon(Icons.Filled.Close, contentDescription = "删除记录")

@@ -45,3 +45,23 @@ fun progressPercent(book: Book): Float {
     if (total <= 0) return 0f
     return ((book.durChapterIndex + 1).toFloat() / total).coerceIn(0f, 1f)
 }
+
+/**
+ * 搜索结果 → 书籍详情的展示快照。
+ *
+ * 结果书可能还没入架，详情页需要先用它渲染，再按 bookId 拉目录；
+ * 入架后由 `getShelfBookWithCacheInfo` 返回的完整数据替换。
+ */
+fun SearchBook.toBook(): Book = Book(
+    bookId = bookId,
+    bookSourceId = bookSourceId,
+    name = name,
+    author = author,
+    bookUrl = bookUrl,
+    origin = origin,
+    coverUrl = coverUrl,
+    intro = intro,
+    latestChapterTitle = lastChapter,
+    wordCount = wordCount,
+    kind = kind,
+)

@@ -100,8 +100,11 @@ class ReaderApi(
         ),
     )
 
-    /** 分组：不传 id 为新建，传 id 为改名/改排序。 */
-    suspend fun saveBookGroup(groupId: Long?, groupName: String, orderNo: Int? = null): ApiResult<BookGroup> =
+    /**
+     * 分组：不传 id 为新建，传 id 为改名/改排序。
+     * 后端只回 `"success"`，不返回分组实体；需要 id 时回查 `getBookGroups`。
+     */
+    suspend fun saveBookGroup(groupId: Long?, groupName: String, orderNo: Int? = null): ApiResult<Unit> =
         post(
             "/saveBookGroup",
             json.encodeToString(BookGroupRequest.serializer(), BookGroupRequest(groupId, groupName, orderNo)),
@@ -110,17 +113,24 @@ class ReaderApi(
     suspend fun deleteBookGroup(groupId: Long): ApiResult<String> =
         post("/deleteBookGroup", json.encodeToString(LongRequest.serializer(), LongRequest(groupId)))
 
-    suspend fun saveBookGroupId(bookIds: List<String>, groupId: Long): ApiResult<Unit> =
+    suspend fun saveBookGroupId(bookId: String, groupId: Long): ApiResult<Unit> =
         post<Unit>(
             "/saveBookGroupId",
             json.encodeToString(
                 SaveBookGroupIdRequest.serializer(),
-                SaveBookGroupIdRequest(bookIds, groupId),
+                SaveBookGroupIdRequest(bookId, groupId),
             ),
         )
 
-    suspend fun saveBookGroupOrder(groupIds: List<Long>): ApiResult<Unit> =
-        post<Unit>("/saveBookGroupOrder", json.encodeToString(GroupOrderRequest.serializer(), GroupOrderRequest(groupIds)))
+    /** 分组排序：整组数组按新顺序回传，后端按下标写 orderNo。 */
+    suspend fun saveBookGroupOrder(groups: List<BookGroup>): ApiResult<Unit> =
+        post(
+            "/saveBookGroupOrder",
+            json.encodeToString(
+                kotlinx.serialization.builtins.ListSerializer(BookGroup.serializer()),
+                groups,
+            ),
+        )
 
     // ─── 目录与正文 ──────────────────────────────────────────────────────────
 
@@ -353,9 +363,6 @@ internal data class LongRequest(val id: Long)
 
 @kotlinx.serialization.Serializable
 internal data class LongListRequest(val ids: List<Long>)
-
-@kotlinx.serialization.Serializable
-internal data class GroupOrderRequest(@kotlinx.serialization.SerialName("groupIds") val groupIds: List<Long>)
 
 @kotlinx.serialization.Serializable
 internal data class BookmarkListRequest(val bookmarks: List<Bookmark>)

@@ -9,9 +9,11 @@ import org.example.reader.core.model.BatchChapterContent
 import org.example.reader.core.model.Book
 import org.example.reader.core.model.BookChapter
 import org.example.reader.core.model.BookGroup
+import org.example.reader.core.model.BookSourceSummary
 import org.example.reader.core.model.Bookmark
 import org.example.reader.core.model.CacheStats
 import org.example.reader.core.model.ChapterContent
+import org.example.reader.core.model.ExploreKind
 import org.example.reader.core.model.ReplaceRule
 import org.example.reader.core.model.SearchBook
 import org.example.reader.core.model.UserInfo
@@ -196,6 +198,25 @@ class ReaderApi(
         ).map { it.deleted }
 
     // ─── 搜索 / 发现 / 换源 ─────────────────────────────────────────────────
+
+    /** 书源摘要列表（含 `exploreUrl`，不含规则字段）。 */
+    suspend fun getBookSourceList(): ApiResult<List<BookSourceSummary>> = get("/getBookSourceList")
+
+    /**
+     * 发现分类。
+     *
+     * 服务端解析书源 `exploreUrl`（支持 JSON 数组 / 「标题::URL」行 / 空 URL 分组标题），
+     * 比客户端拉全量规则自己解析更省，也避免两端解析口径漂移。
+     */
+    suspend fun getExploreKinds(bookSourceId: Long): ApiResult<List<ExploreKind>> =
+        post(
+            "/getExploreKinds",
+            json.encodeToString(ExploreKindsRequest.serializer(), ExploreKindsRequest(bookSourceId)),
+        )
+
+    /** 加入书架（单本 upsert）。 */
+    suspend fun saveBook(request: SaveBookRequest): ApiResult<Book> =
+        post("/saveBook", json.encodeToString(SaveBookRequest.serializer(), request))
 
     suspend fun exploreBook(bookSourceId: Long, ruleFindUrl: String, page: Int): ApiResult<List<SearchBook>> =
         post(

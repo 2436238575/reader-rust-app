@@ -1,6 +1,7 @@
 package org.example.reader.ui.util
 
 import org.example.reader.core.model.Book
+import org.example.reader.core.model.SearchBook
 import org.example.reader.core.session.ServerConfig
 
 /**
@@ -10,12 +11,22 @@ import org.example.reader.core.session.ServerConfig
  * 只接受「本站相对路径」；完整外链是用户自设 `customCoverUrl` 的兜底场景。
  * 宽度参数让后端按需缩放，避免下载 1024px 大图塞进小卡片。
  */
-fun Book.coverUrl(serverConfig: ServerConfig?, width: Int = 320): String? {
-    val raw = customCoverUrl?.takeIf { it.isNotBlank() } ?: coverUrl?.takeIf { it.isNotBlank() }
-        ?: return null
-    if (serverConfig == null) return raw
-    val resolved = serverConfig.resolveResource(raw)
-    if (!raw.startsWith("/")) return resolved
+fun Book.coverUrl(serverConfig: ServerConfig?, width: Int = 320): String? =
+    resolveCover(
+        serverConfig,
+        customCoverUrl?.takeIf { it.isNotBlank() } ?: coverUrl,
+        width,
+    )
+
+/** 搜索结果 / 发现结果的封面：字段同 Book，但没有 `customCoverUrl`。 */
+fun SearchBook.coverUrl(serverConfig: ServerConfig?, width: Int = 320): String? =
+    resolveCover(serverConfig, coverUrl, width)
+
+private fun resolveCover(serverConfig: ServerConfig?, raw: String?, width: Int): String? {
+    val value = raw?.takeIf { it.isNotBlank() } ?: return null
+    if (serverConfig == null) return value
+    val resolved = serverConfig.resolveResource(value)
+    if (!value.startsWith("/")) return resolved
     val separator = if (resolved.contains('?')) '&' else '?'
     return "$resolved${separator}w=$width"
 }

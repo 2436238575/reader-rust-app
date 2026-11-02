@@ -106,6 +106,21 @@ class ShelfViewModel(private val deps: AppDependencies) : ViewModel() {
         }
     }
 
+    /**
+     * 静默刷新：切回书架 tab 时调用。
+     *
+     * 在「发现 / 搜索」里加过书后，这个 ViewModel 还是旧数据。这里不切 loading、
+     * 失败也保留旧列表——每次切 tab 都闪一次整屏加载是不能接受的。
+     */
+    fun refreshSilently() {
+        if (_state.value.isLoading) return
+        viewModelScope.launch {
+            val books = deps.api.getBookshelfWithCacheInfo().getOrNull() ?: return@launch
+            val groups = deps.api.getBookGroups().getOrNull() ?: _state.value.groups
+            _state.update { it.copy(books = books, groups = groups, error = null) }
+        }
+    }
+
     fun onKeywordChange(value: String) {
         _state.update { it.copy(keyword = value) }
     }

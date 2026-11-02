@@ -72,10 +72,33 @@ data class BatchContentsRequest(
 )
 
 @Serializable
+data class ExploreKindsRequest(
+    val bookSourceId: Long,
+)
+
+@Serializable
 data class ExploreRequest(
     val bookSourceId: Long,
     val ruleFindUrl: String,
     val page: Int,
+)
+
+/**
+ * 加入书架（`/saveBook`）。
+ *
+ * 只带前端同款的最小字段：后端会自己登记 bookId 并按需补齐元数据。
+ * 直接序列化 `Book` 会因 `encodeDefaults = true` 把 `durChapterIndex`、`group`
+ * 等默认值一起发过去，等于把已在架书籍的阅读进度覆盖成 0。
+ */
+@Serializable
+data class SaveBookRequest(
+    val bookId: String,
+    val bookSourceId: Long,
+    val name: String,
+    val author: String,
+    val bookUrl: String,
+    val origin: String,
+    val coverUrl: String? = null,
 )
 
 @Serializable

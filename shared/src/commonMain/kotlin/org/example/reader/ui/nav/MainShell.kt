@@ -23,6 +23,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import org.example.reader.core.AppDependencies
 import org.example.reader.ui.components.EmptyState
+import org.example.reader.ui.explore.ExploreScreen
 import org.example.reader.ui.reader.ReaderScreen
 import org.example.reader.ui.shelf.ShelfScreen
 
@@ -78,9 +79,10 @@ fun MainShell(deps: AppDependencies, modifier: Modifier = Modifier) {
                     contentPadding = padding,
                     onOpenBook = { openBookId = it },
                 )
-                MainTab.Explore -> EmptyState(
-                    message = "发现页开发中",
-                    modifier = Modifier.fillMaxSize(),
+                MainTab.Explore -> ExploreScreen(
+                    deps = deps,
+                    contentPadding = padding,
+                    onOpenBook = { openBookId = it },
                 )
                 MainTab.Recent -> EmptyState(
                     message = "最近阅读开发中",

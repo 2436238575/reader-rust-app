@@ -38,6 +38,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -86,6 +87,9 @@ fun ShelfScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
     var searchExpanded by remember { mutableStateOf(false) }
     val serverConfig by deps.session.serverConfig.collectAsStateWithLifecycle()
+
+    // 从「发现 / 搜索」加书回来时刷新列表；静默模式不闪加载态
+    LaunchedEffect(Unit) { viewModel.refreshSilently() }
 
     Column(modifier = modifier.fillMaxSize().padding(contentPadding)) {
         TopAppBar(

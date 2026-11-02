@@ -112,11 +112,39 @@ data class SearchBook(
     @SerialName("wordCount") val wordCount: String? = null,
 )
 
-/** 发现（书海）分类。 */
+/**
+ * 发现分类。后端 `ExploreKind` 用 `title`（不是 name）。
+ *
+ * `url` 为空表示这是**分组标题行**（书源 `exploreUrl` 里用「标题::URL」排版），
+ * 只做视觉分隔，不可点击。
+ */
 @Serializable
 data class ExploreKind(
-    val name: String = "",
-    val url: String = "",
+    val title: String = "",
+    val url: String? = null,
+)
+
+/**
+ * 书源摘要（`/getBookSourceList` 下发）。
+ *
+ * 含 `exploreUrl`（发现页筛源与解析分类要用），但**不含** rule 系列规则字段；
+ * 单条全量规则走 `/getBookSource`。
+ */
+@Serializable
+data class BookSourceSummary(
+    @SerialName("bookSourceName") val bookSourceName: String = "",
+    @SerialName("bookSourceUrl") val bookSourceUrl: String = "",
+    @SerialName("bookSourceId") val bookSourceId: Long? = null,
+    @SerialName("bookSourceGroup") val bookSourceGroup: String? = null,
+    @SerialName("bookSourceType") val bookSourceType: Int? = null,
+    val enabled: Boolean? = null,
+    @SerialName("enabledExplore") val enabledExplore: Boolean? = null,
+    @SerialName("enabledCookieJar") val enabledCookieJar: Boolean? = null,
+    @SerialName("lastUpdateTime") val lastUpdateTime: Long? = null,
+    @SerialName("respondTime") val respondTime: Long? = null,
+    @SerialName("customOrder") val customOrder: Int? = null,
+    val weight: Int? = null,
+    @SerialName("exploreUrl") val exploreUrl: String? = null,
 )
 
 /** 书签 / 划线。身份 = bookId + chapterIndex + chapterPos + kind。 */

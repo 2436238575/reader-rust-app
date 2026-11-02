@@ -11,6 +11,19 @@ import org.example.reader.core.AppDependencies
 import org.example.reader.core.model.Book
 import org.example.reader.core.model.BookGroup
 import org.example.reader.core.net.ApiResult
+import org.example.reader.core.settings.SettingsKeys
+
+/** 书架视图形态。列表信息密度更高，手机竖屏更常用，因此作为默认。 */
+enum class ShelfLayout(val storageValue: String) {
+    List("list"),
+    Grid("grid"),
+    ;
+
+    companion object {
+        fun fromStorage(value: String?): ShelfLayout =
+            entries.firstOrNull { it.storageValue == value } ?: List
+    }
+}
 
 data class ShelfUiState(
     val isLoading: Boolean = true,
@@ -20,6 +33,7 @@ data class ShelfUiState(
     val activeGroupId: Long = 0,
     val keyword: String = "",
     val error: String? = null,
+    val layout: ShelfLayout = ShelfLayout.List,
 ) {
     /**
      * 分组过滤。
@@ -55,7 +69,11 @@ data class ShelfUiState(
 
 class ShelfViewModel(private val deps: AppDependencies) : ViewModel() {
 
-    private val _state = MutableStateFlow(ShelfUiState())
+    private val _state = MutableStateFlow(
+        ShelfUiState(
+            layout = ShelfLayout.fromStorage(deps.settings.getString(SettingsKeys.SHELF_LAYOUT)),
+        ),
+    )
     val state: StateFlow<ShelfUiState> = _state.asStateFlow()
 
     init {
@@ -90,6 +108,15 @@ class ShelfViewModel(private val deps: AppDependencies) : ViewModel() {
 
     fun onKeywordChange(value: String) {
         _state.update { it.copy(keyword = value) }
+    }
+
+    fun toggleLayout() {
+        val next = when (_state.value.layout) {
+            ShelfLayout.List -> ShelfLayout.Grid
+            ShelfLayout.Grid -> ShelfLayout.List
+        }
+        deps.settings.putString(SettingsKeys.SHELF_LAYOUT, next.storageValue)
+        _state.update { it.copy(layout = next) }
     }
 
     fun onGroupSelect(groupId: Long) {

@@ -23,6 +23,9 @@ object SettingsKeys {
     const val API_BASE = "api_base"
     const val USERNAME = "username"
 
+    /** 书架视图形态：`list`（默认，信息密度高）或 `grid`。 */
+    const val SHELF_LAYOUT = "shelf_layout"
+
     // 阅读器排版
     const val READER_FONT_SIZE = "reader_font_size"
     const val READER_LINE_HEIGHT = "reader_line_height"

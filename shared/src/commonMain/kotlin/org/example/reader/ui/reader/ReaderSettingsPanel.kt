@@ -110,8 +110,9 @@ fun ReaderSettingsPanel(
             method = settings.method,
             onSelect = { method ->
                 onMethodChange(method)
-                if (method != ReadMethod.SlideUp) {
-                    onHint("「${method.label}」将在 P1-2 接入，当前仍为上下滑动")
+                // 上下滚动两种还没做，先明确告知，不让人以为点了没反应
+                if (method == ReadMethod.Scroll || method == ReadMethod.Scroll2) {
+                    onHint("「${method.label}」将在后续接入，当前按上下滑动呈现")
                 }
             },
         )

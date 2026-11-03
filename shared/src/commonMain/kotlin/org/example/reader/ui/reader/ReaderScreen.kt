@@ -67,6 +67,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -91,6 +92,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import org.example.reader.core.AppDependencies
 import org.example.reader.core.model.Book
+import org.example.reader.core.settings.ReadMethod
 import org.example.reader.core.settings.ReaderSettings
 import org.example.reader.core.util.AppBackHandler
 import org.example.reader.core.util.SystemBarsAppearance
@@ -146,15 +148,15 @@ fun ReaderScreen(
 
     LaunchedEffect(startIndex) { viewModel.applyStartIndex(startIndex) }
 
-    // 进入阅读器时要恢复的位置。ViewModel 按 bookId 缓存，重进不会重建，
-    // 所以只在本次进入的第一次定位时使用，之后换章一律从章首开始。
-    var pendingEntryRestore by remember { mutableStateOf(true) }
+    val horizontalMode = settings.method == ReadMethod.Horizontal || settings.method == ReadMethod.DualPage
 
-    LaunchedEffect(state.currentIndex, state.paragraphs) {
-        if (state.paragraphs.isEmpty()) return@LaunchedEffect
-        val restore = state.pendingScrollFraction
-            ?: if (pendingEntryRestore) viewModel.entryFraction() else 0f
-        pendingEntryRestore = false
+    // 进入/切换翻页方式时的定位依据：优先服务端恢复位置，其次内存里的当前位置
+    val restoreFraction = state.pendingScrollFraction ?: viewModel.currentFraction()
+
+    // 竖排模式的定位：pendingScrollFraction 有值就恢复，否则回章首
+    LaunchedEffect(state.currentIndex, state.paragraphs, horizontalMode) {
+        if (horizontalMode || state.paragraphs.isEmpty()) return@LaunchedEffect
+        val restore = restoreFraction
         if (restore > 0.001f) {
             // 列表还没量出项数时 totalItemsCount 是 0，等它稳定再定位
             val total = snapshotFlow { listState.layoutInfo.totalItemsCount }.first { it > 0 }
@@ -167,7 +169,8 @@ fun ReaderScreen(
     }
 
     // 章内位置回传：VM 内部按 10s 节流落库，不必在这里控频
-    LaunchedEffect(listState, state.currentIndex) {
+    LaunchedEffect(listState, state.currentIndex, horizontalMode) {
+        if (horizontalMode) return@LaunchedEffect
         snapshotFlow { listState.chapterFraction() }.collect { viewModel.onScrolled(it) }
     }
 
@@ -213,6 +216,19 @@ fun ReaderScreen(
                         showCatalog = false
                         controlsVisible = false
                     },
+                    modifier = Modifier.fillMaxSize(),
+                )
+            } else if (horizontalMode) {
+                HorizontalReader(
+                    state = state,
+                    settings = settings,
+                    palette = palette,
+                    onPrevChapter = viewModel::prevChapter,
+                    onNextChapter = viewModel::nextChapter,
+                    onToggleControls = { controlsVisible = !controlsVisible },
+                    onProgress = viewModel::onScrolled,
+                    onRestoreConsumed = viewModel::consumePendingScroll,
+                    restoreFraction = restoreFraction,
                     modifier = Modifier.fillMaxSize(),
                 )
             } else {

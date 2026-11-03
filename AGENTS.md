@@ -142,6 +142,13 @@ androidApp/        Activity、清单、图标、资源
   缓存 key 是目录下标；`刷新本章` 必须 `force = true` 绕过缓存。
 - 阅读器设置只有一个来源 `deps.readerSettings`（`core/settings/ReaderSettings.kt`），
   面板改一项正文立即重排；新增配置项要同时补 `SettingsKeys` 与 load/update。
+- **左右翻页（`HorizontalReader.kt`）**：分页按段落整体装箱（`TextMeasurer` 逐段量高），
+  不在段落中间切；每页记 `startParagraph`，进度与恢复都按**段落比例**换算，
+  与竖排模式同一口径（不按页码，换字号/换字号后页码会变）。
+  分页只避开系统栏，**不为工具条预留高度**——工具条可收起，收起来整页可见。
+- 翻页模式的正文区域由 `contentIndex`（正文属于哪一章）把关：
+  换章时 `currentIndex` 先变、正文后到，必须等两者一致再排版，
+  否则会拿上一章正文分页并提前消费掉恢复位置。
 - 阅读器是沉浸式：正文全屏、点正文切换控件；**正文必须避开系统栏**
   （`WindowInsets.statusBars/navigationBars`），工具条只做覆盖层。
   工具条自身要消费点击（`pointerInput { detectTapGestures { } }`），否则点空白处会
@@ -204,27 +211,33 @@ Kotlin 的块注释可嵌套，KDoc 里写 `/reader3/*` 会开启一个未闭合
 否则书名/章名会和正文糊在一起。改 `ModalBottomSheet` 的 `containerColor` 时
 **必须同时提供 `LocalContentColor`**，否则标签仍是外层主题的深色，暗面板上整片看不见。
 
-**7. 缓存型 ViewModel 会吃掉「重新进入」的初始化**
+**7. 节流上报在「一次操作只有一次回调」时会丢**
+
+滚动模式每秒都有回调，10s 节流看起来正常；但左右翻页一次翻页只回调一次，
+节流窗口没过就永远等不到下一次，退出前的位置没落库。
+`onScrolled` 里要挂一个「窗口剩余时间后补存」的 Job（滚动中会不断重置，等价防抖）。
+
+**8. 缓存型 ViewModel 会吃掉「重新进入」的初始化**
 
 阅读器 ViewModel 按 bookId 注册在 Activity 作用域，离开再进来不会重建，
 `init { open() }` 也不会再跑。凡是「每次进入都该重新做一次」的事
 （恢复阅读位置、重读进度、重新拉目录），都要么走 `entryFraction()` 这类一次性出口，
 要么在进入时显式触发，不要指望 init。
 
-**8. 系统返回直接退桌面**
+**9. 系统返回直接退桌面**
 
 Compose 不会自动把系统返回映射到页面栈。每个覆盖层必须：
 栈式页面在 `MainShell` 统一 `AppBackHandler(enabled = overlays.isNotEmpty())`；
 页面内部状态（书架多选、搜索输入等）各自再挂一个更靠近的 `AppBackHandler`。
 早期的表现是「阅读器里按返回直接退出应用」。
 
-**9. `saveBookGroup` 只回 `"success"`，不回分组实体**
+**10. `saveBookGroup` 只回 `"success"`，不回分组实体**
 
 新建分组后需要 id（比如「建完直接移动过去」）时，必须回查
 `/getBookGroups` 按名字找。把它声明成 `ApiResult<BookGroup>` 会解码失败，
 表现为「服务端已建组、客户端报错且列表不刷新」。
 
-**10. `encodeDefaults = true` 会把默认值写进请求体**
+**11. `encodeDefaults = true` 会把默认值写进请求体**
 
 `ReaderJson` 开启了 `encodeDefaults`（显式 null 反而被裁掉）。直接序列化完整
 `Book` 去调 `/saveBook`，会带上 `durChapterIndex: 0`、`group: 0`，

@@ -2,6 +2,8 @@ package org.example.reader.ui.reader
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -30,6 +32,13 @@ data class ReaderUiState(
      * 读到一半退出，重进回到原处而不是章首。
      */
     val pendingScrollFraction: Float? = null,
+    /**
+     * `paragraphs` 属于哪一章。
+     *
+     * 换章时 `currentIndex` 会先变、正文后到；分页/定位必须等两者一致，
+     * 否则会拿上一章的正文排版并提前消费掉恢复位置。
+     */
+    val contentIndex: Int = -1,
 ) {
     val currentChapter: BookChapter? get() = chapters.getOrNull(currentIndex)
     val hasPrev: Boolean get() = currentIndex > 0
@@ -72,6 +81,9 @@ class ReaderViewModel(
 
     /** 上次上报时间：滚动过程中按 [PROGRESS_SAVE_INTERVAL_MS] 节流。 */
     private var lastSavedAt = 0L
+
+    /** 节流窗口内挂起的补存任务；只在窗口到期后补一次，保证位置最终一定落库。 */
+    private var pendingSaveJob: Job? = null
 
     /** 打开已读过的章节时，记住要恢复到的位置。 */
     private var pendingRestoreFraction: Float? = null
@@ -175,6 +187,7 @@ class ReaderViewModel(
                 paragraphs = paragraphs,
                 isEdited = content.edited,
                 pendingScrollFraction = restore,
+                contentIndex = index,
             )
         }
         // 最近阅读以「实际读到哪一章」为准（Web 端同样在章节落定后记录）
@@ -242,19 +255,30 @@ class ReaderViewModel(
     fun onScrolled(fraction: Float) {
         lastFraction = fraction.coerceIn(0f, 1f)
         val now = nowMillis()
-        if (now - lastSavedAt >= PROGRESS_SAVE_INTERVAL_MS) {
+        val elapsed = now - lastSavedAt
+        if (elapsed >= PROGRESS_SAVE_INTERVAL_MS) {
             lastSavedAt = now
+            persistProgress(_state.value.currentIndex, lastFraction)
+            return
+        }
+        // 横翻这类「一次翻页只有一次回调」的场景，只靠节流会一直等不到保存；
+        // 在窗口剩余时间后补一次，滚动中每个事件都会重置它，等价于防抖。
+        pendingSaveJob?.cancel()
+        pendingSaveJob = viewModelScope.launch {
+            delay(PROGRESS_SAVE_INTERVAL_MS - elapsed)
+            lastSavedAt = nowMillis()
             persistProgress(_state.value.currentIndex, lastFraction)
         }
     }
 
     /**
-     * 进入阅读器时的位置。
+     * 当前内存里的章内位置（0..1）。
      *
-     * ViewModel 按 bookId 缓存：离开阅读器再点回来不会重建，
-     * 所以「上次读到哪」要靠这里拿，否则每次都退回章首并把进度冲成 0。
+     * ViewModel 按 bookId 注册在 Activity 作用域，重进/切换翻页方式都不会重建，
+     * 界面进入时用 `pendingScrollFraction ?: currentFraction()` 定位，
+     * 否则会退回章首并把进度冲成 0。
      */
-    fun entryFraction(): Float = lastFraction
+    fun currentFraction(): Float = lastFraction
 
     /** 界面对着 [ReaderUiState.pendingScrollFraction] 滚完一次后调用，避免重复恢复。 */
     fun consumePendingScroll() {
@@ -265,6 +289,7 @@ class ReaderViewModel(
     fun flushProgress() {
         val state = _state.value
         if (state.paragraphs.isEmpty()) return
+        pendingSaveJob?.cancel()
         lastSavedAt = nowMillis()
         persistProgress(state.currentIndex, lastFraction)
     }

@@ -64,6 +64,24 @@ class ReaderApi(
     suspend fun saveBook(book: Book): ApiResult<Book> =
         post("/saveBook", json.encodeToString(Book.serializer(), book))
 
+    /**
+     * 导入本地书。TXT / EPUB 走两个端点，multipart 字段名都是 `file`。
+     * 文件可到几十 MB，必须用上传超时（默认 120s 不够）。
+     */
+    suspend fun uploadBookFile(fileName: String, bytes: ByteArray, mimeType: String): ApiResult<Book> {
+        val path = if (fileName.endsWith(".epub", ignoreCase = true)) "/uploadEpubBook" else "/uploadTxtBook"
+        return send(
+            HttpRequest(
+                method = "POST",
+                path = path,
+                body = RequestBody.Multipart(
+                    files = listOf(FilePart(name = "file", filename = fileName, bytes = bytes, contentType = mimeType)),
+                ),
+                timeoutMillis = HttpRequest.UPLOAD_TIMEOUT_MILLIS,
+            ),
+        )
+    }
+
     suspend fun saveBooks(books: List<Book>, restore: Boolean = false): ApiResult<List<Book>> =
         post(
             "/saveBooks",

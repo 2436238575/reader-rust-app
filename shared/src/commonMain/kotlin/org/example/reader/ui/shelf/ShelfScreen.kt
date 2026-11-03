@@ -5,8 +5,10 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -34,6 +36,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
@@ -59,11 +63,17 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -71,6 +81,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import org.example.reader.core.AppDependencies
 import org.example.reader.core.model.Book
 import org.example.reader.core.model.BookGroup
+import org.example.reader.core.platform.rememberBookFilePicker
 import org.example.reader.core.util.AppBackHandler
 import org.example.reader.core.settings.ShelfLayout
 import org.example.reader.core.session.ServerConfig
@@ -82,6 +93,7 @@ import org.example.reader.ui.components.ErrorState
 import org.example.reader.ui.components.FullScreenLoading
 import org.example.reader.ui.util.formatProgress
 import org.example.reader.ui.util.progressPercent
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /**
@@ -119,38 +131,62 @@ fun ShelfScreen(
     // 从「移动分组 → 新建分组」进入时，建完直接移动选中的书
     var moveAfterCreate by remember { mutableStateOf(false) }
 
+    val pickBookFile = rememberBookFilePicker { file -> viewModel.importBook(file) }
+
     LaunchedEffect(viewModel) {
         viewModel.messages.collect { snackbarHostState.showSnackbar(it) }
     }
     // 从「发现 / 搜索」加书回来时刷新列表；静默模式不闪加载态
     LaunchedEffect(Unit) { viewModel.refreshSilently() }
-    // 多选时系统返回先退出多选，而不是直接退出应用
+    // 多选/排序时系统返回先退出该模式，而不是直接退出应用
     AppBackHandler(enabled = state.selectionMode) { viewModel.exitSelection() }
+    AppBackHandler(enabled = state.sortMode) {
+        viewModel.exitSortMode()
+        viewModel.refreshSilently()
+    }
 
     Box(modifier = modifier.fillMaxSize().padding(contentPadding)) {
         Column(modifier = Modifier.fillMaxSize()) {
             TopAppBar(
                 title = {
                     Text(
-                        text = if (state.selectionMode) {
-                            "已选 ${state.selectedIds.size}"
-                        } else if (state.books.isEmpty()) {
-                            "书架"
-                        } else {
-                            "书架（${state.books.size}）"
+                        text = when {
+                            state.sortMode -> "排序书架"
+                            state.selectionMode -> "已选 ${state.selectedIds.size}"
+                            state.books.isEmpty() -> "书架"
+                            else -> "书架（${state.books.size}）"
                         },
                         style = MaterialTheme.typography.titleLarge,
                     )
                 },
                 navigationIcon = {
-                    if (state.selectionMode) {
-                        IconButton(onClick = viewModel::exitSelection) {
-                            Icon(Icons.Filled.Close, contentDescription = "退出多选")
+                    if (state.selectionMode || state.sortMode) {
+                        IconButton(
+                            onClick = {
+                                if (state.sortMode) {
+                                    viewModel.exitSortMode()
+                                    viewModel.refreshSilently()
+                                } else {
+                                    viewModel.exitSelection()
+                                }
+                            },
+                        ) {
+                            Icon(
+                                Icons.Filled.Close,
+                                contentDescription = if (state.sortMode) "取消排序" else "退出多选",
+                            )
                         }
                     }
                 },
                 actions = {
-                    if (state.selectionMode) {
+                    if (state.sortMode) {
+                        TextButton(
+                            onClick = viewModel::commitOrder,
+                            enabled = !state.isSavingOrder,
+                        ) {
+                            Text("保存")
+                        }
+                    } else if (state.selectionMode) {
                         TextButton(onClick = viewModel::selectAllVisible) {
                             Text(if (state.allVisibleSelected) "取消全选" else "全选")
                         }
@@ -186,6 +222,22 @@ fun ShelfScreen(
                                     },
                                 )
                                 DropdownMenuItem(
+                                    text = { Text("排序书籍") },
+                                    enabled = layout == ShelfLayout.List && state.books.size > 1,
+                                    onClick = {
+                                        menuExpanded = false
+                                        viewModel.enterSortMode()
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(if (state.isImporting) "正在导入…" else "导入本地书") },
+                                    enabled = !state.isImporting,
+                                    onClick = {
+                                        menuExpanded = false
+                                        pickBookFile()
+                                    },
+                                )
+                                DropdownMenuItem(
                                     text = { Text("分组管理") },
                                     onClick = {
                                         menuExpanded = false
@@ -205,7 +257,7 @@ fun ShelfScreen(
                 },
             )
 
-            if (searchExpanded && !state.selectionMode) {
+            if (searchExpanded && !state.selectionMode && !state.sortMode) {
                 OutlinedTextField(
                     value = state.keyword,
                     onValueChange = viewModel::onKeywordChange,
@@ -217,7 +269,7 @@ fun ShelfScreen(
                 )
             }
 
-            if (state.hasGroups) {
+            if (state.hasGroups && !state.sortMode) {
                 GroupFilterRow(
                     groups = state.groups,
                     activeGroupId = state.activeGroupId,
@@ -243,9 +295,11 @@ fun ShelfScreen(
                         imageLoader = deps.imageLoader,
                         selectionMode = state.selectionMode,
                         selectedIds = state.selectedIds,
+                        sortMode = state.sortMode,
                         onOpenBook = onOpenBook,
                         onShowDetail = onShowDetail,
                         onToggleSelection = viewModel::toggleSelection,
+                        onMoveBook = viewModel::moveBookBy,
                     )
 
                     else -> BookGrid(
@@ -272,6 +326,14 @@ fun ShelfScreen(
                     onMoveGroup = { showMoveGroup = true },
                     onDelete = { showBulkDelete = true },
                 )
+            }
+
+            AnimatedVisibility(
+                visible = state.sortMode,
+                enter = slideInVertically { it } + fadeIn(),
+                exit = slideOutVertically { it } + fadeOut(),
+            ) {
+                SortBar(isSaving = state.isSavingOrder)
             }
         }
 
@@ -383,6 +445,18 @@ fun ShelfScreen(
                             style = MaterialTheme.typography.bodyLarge,
                             modifier = Modifier.weight(1f),
                         )
+                        IconButton(
+                            onClick = { viewModel.moveGroup(group.groupId, -1) },
+                            enabled = group != state.groups.firstOrNull(),
+                        ) {
+                            Icon(Icons.Filled.KeyboardArrowUp, contentDescription = "上移")
+                        }
+                        IconButton(
+                            onClick = { viewModel.moveGroup(group.groupId, 1) },
+                            enabled = group != state.groups.lastOrNull(),
+                        ) {
+                            Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "下移")
+                        }
                         IconButton(onClick = { groupNameDialog = group.groupId to group.groupName }) {
                             Icon(Icons.Filled.Edit, contentDescription = "重命名")
                         }
@@ -514,6 +588,82 @@ private fun SelectionBar(
 }
 
 @Composable
+private fun SortBar(isSaving: Boolean) {
+    Surface(tonalElevation = 3.dp, color = MaterialTheme.colorScheme.surfaceContainer) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "拖动右侧手柄调整顺序，松手后点「保存」",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f),
+            )
+            if (isSaving) {
+                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+            }
+        }
+    }
+}
+
+/**
+ * 排序手柄。
+ *
+ * 拖动时按整行高度换算「移动几步」，实时在本地列表里换位；
+ * 松手后由顶栏「保存」整架提交。行高从实际布局里量，字体放大也适用。
+ */
+@Composable
+private fun DragHandle(
+    bookId: String,
+    rowHeightPx: Int,
+    onMoveBook: (String, Int) -> Unit,
+) {
+    var accumulated by remember(bookId) { mutableFloatStateOf(0f) }
+    val handleColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
+    Canvas(
+        modifier = Modifier
+            // 触摸区保持 44dp，但视觉只有三条细线，避免杵一个大汉堡图标在行尾
+            .size(44.dp)
+            .pointerInput(bookId, rowHeightPx) {
+                if (rowHeightPx <= 0) return@pointerInput
+                detectDragGestures(
+                    onDragStart = { accumulated = 0f },
+                    onDragEnd = { accumulated = 0f },
+                    onDragCancel = { accumulated = 0f },
+                ) { change, dragAmount ->
+                    change.consume()
+                    accumulated += dragAmount.y
+                    val steps = (accumulated / rowHeightPx).toInt()
+                    if (steps != 0) {
+                        repeat(abs(steps)) {
+                            onMoveBook(bookId, if (steps > 0) 1 else -1)
+                        }
+                        accumulated -= steps * rowHeightPx
+                    }
+                }
+            },
+    ) {
+        val lineWidth = 12.dp.toPx()
+        val lineHeight = 1.5.dp.toPx()
+        val gap = 3.5.dp.toPx()
+        val totalHeight = lineHeight * 3 + gap * 2
+        var y = (size.height - totalHeight) / 2
+        repeat(3) {
+            drawRoundRect(
+                color = handleColor,
+                topLeft = Offset((size.width - lineWidth) / 2, y),
+                size = Size(lineWidth, lineHeight),
+                cornerRadius = CornerRadius(lineHeight / 2),
+            )
+            y += lineHeight + gap
+        }
+    }
+}
+
+@Composable
 private fun GroupOption(label: String, onClick: () -> Unit) {
     TextButton(
         onClick = onClick,
@@ -532,10 +682,13 @@ private fun BookList(
     imageLoader: coil3.ImageLoader,
     selectionMode: Boolean,
     selectedIds: Set<String>,
+    sortMode: Boolean,
     onOpenBook: (String) -> Unit,
     onShowDetail: (Book) -> Unit,
     onToggleSelection: (String) -> Unit,
+    onMoveBook: (String, Int) -> Unit,
 ) {
+    var rowHeightPx by remember { mutableStateOf(0) }
     LazyColumn(
         contentPadding = PaddingValues(bottom = 12.dp),
         modifier = Modifier.fillMaxSize(),
@@ -555,12 +708,30 @@ private fun BookList(
                 imageLoader = imageLoader,
                 selectionMode = selectionMode,
                 selected = book.bookId in selectedIds,
+                modifier = Modifier.onGloballyPositioned { coords ->
+                    if (coords.size.height > 0) rowHeightPx = coords.size.height
+                },
+                trailing = if (sortMode) {
+                    {
+                        DragHandle(
+                            bookId = book.bookId,
+                            rowHeightPx = rowHeightPx,
+                            onMoveBook = onMoveBook,
+                        )
+                    }
+                } else {
+                    null
+                },
                 onClick = {
-                    if (selectionMode) onToggleSelection(book.bookId) else onOpenBook(book.bookId)
+                    when {
+                        sortMode -> Unit
+                        selectionMode -> onToggleSelection(book.bookId)
+                        else -> onOpenBook(book.bookId)
+                    }
                 },
                 onLongClick = {
-                    // 长按进详情；多选模式下不抢手势，避免误触
-                    if (!selectionMode) onShowDetail(book)
+                    // 长按进详情；多选/排序模式下不抢手势，避免误触
+                    if (!selectionMode && !sortMode) onShowDetail(book)
                 },
             )
             HorizontalDivider(

@@ -12,6 +12,7 @@ import kotlinx.coroutines.launch
 import org.example.reader.core.AppDependencies
 import org.example.reader.core.model.Book
 import org.example.reader.core.model.BookGroup
+import org.example.reader.core.platform.PickedBookFile
 import org.example.reader.core.net.ApiResult
 
 data class ShelfUiState(
@@ -26,6 +27,11 @@ data class ShelfUiState(
     val selectionMode: Boolean = false,
     val selectedIds: Set<String> = emptySet(),
     val isBulkWorking: Boolean = false,
+    // ── 排序模式（拖动右侧手柄） ──
+    val sortMode: Boolean = false,
+    val isSavingOrder: Boolean = false,
+    // ── 本地书导入 ──
+    val isImporting: Boolean = false,
 ) {
     /**
      * 分组过滤。
@@ -148,6 +154,115 @@ class ShelfViewModel(private val deps: AppDependencies) : ViewModel() {
                 state.copy(selectedIds = emptySet())
             } else {
                 state.copy(selectedIds = state.visibleBooks.map { it.bookId }.toSet())
+            }
+        }
+    }
+
+    // ─── 排序模式 ────────────────────────────────────────────────────────────
+
+    /**
+     * 进入排序模式。
+     *
+     * 排序作用于整架顺序，所以清掉分组与关键词筛选——否则拖动的下标
+     * 与可见列表不一致。
+     */
+    fun enterSortMode() {
+        if (_state.value.books.size < 2) return
+        _state.update {
+            it.copy(
+                sortMode = true,
+                selectionMode = false,
+                selectedIds = emptySet(),
+                activeGroupId = 0L,
+                keyword = "",
+            )
+        }
+    }
+
+    fun exitSortMode() {
+        _state.update { it.copy(sortMode = false) }
+    }
+
+    /** 拖动时按「移动一步」实时换位，松手后由 [commitOrder] 整架落库。 */
+    fun moveBookBy(bookId: String, delta: Int) {
+        val state = _state.value
+        if (!state.sortMode) return
+        val list = state.books.toMutableList()
+        val from = list.indexOfFirst { it.bookId == bookId }
+        if (from < 0) return
+        val to = (from + delta).coerceIn(0, list.lastIndex)
+        if (to == from) return
+        val item = list.removeAt(from)
+        list.add(to, item)
+        _state.update { it.copy(books = list) }
+    }
+
+    fun commitOrder() {
+        val state = _state.value
+        if (!state.sortMode || state.isSavingOrder) return
+        _state.update { it.copy(isSavingOrder = true) }
+        viewModelScope.launch {
+            when (val result = deps.api.saveBooks(state.books)) {
+                is ApiResult.Success -> {
+                    _state.update { it.copy(isSavingOrder = false, sortMode = false, books = result.value) }
+                    _messages.tryEmit("书架顺序已保存")
+                }
+
+                is ApiResult.Failure -> {
+                    _state.update { it.copy(isSavingOrder = false) }
+                    _messages.tryEmit(result.message)
+                }
+            }
+        }
+    }
+
+    // ─── 分组排序 ────────────────────────────────────────────────────────────
+
+    /**
+     * 分组上移/下移。
+     *
+     * `/saveBookGroupOrder` 是整表提交语义（不在列表里的分组会被删除），
+     * 所以必须带完整分组列表，并按新下标重写 orderNo。
+     */
+    fun moveGroup(groupId: Long, delta: Int) {
+        val groups = _state.value.groups.toMutableList()
+        val from = groups.indexOfFirst { it.groupId == groupId }
+        if (from < 0) return
+        val to = (from + delta).coerceIn(0, groups.lastIndex)
+        if (to == from) return
+        val item = groups.removeAt(from)
+        groups.add(to, item)
+        val ordered = groups.mapIndexed { index, group -> group.copy(orderNo = index) }
+        _state.update { it.copy(groups = ordered) }
+        viewModelScope.launch {
+            when (val result = deps.api.saveBookGroupOrder(ordered)) {
+                is ApiResult.Success -> Unit
+                is ApiResult.Failure -> {
+                    _messages.tryEmit(result.message)
+                    load(showLoading = false)
+                }
+            }
+        }
+    }
+
+    // ─── 本地书导入 ──────────────────────────────────────────────────────────
+
+    fun importBook(file: PickedBookFile) {
+        if (_state.value.isImporting) return
+        _state.update { it.copy(isImporting = true) }
+        _messages.tryEmit("正在导入「${file.name}」…")
+        viewModelScope.launch {
+            when (val result = deps.api.uploadBookFile(file.name, file.bytes, file.mimeType)) {
+                is ApiResult.Success -> {
+                    _state.update { it.copy(isImporting = false) }
+                    _messages.tryEmit("已导入「${result.value.name}」")
+                    load(showLoading = false)
+                }
+
+                is ApiResult.Failure -> {
+                    _state.update { it.copy(isImporting = false) }
+                    _messages.tryEmit(result.message)
+                }
             }
         }
     }

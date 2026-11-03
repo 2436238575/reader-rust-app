@@ -76,6 +76,9 @@ androidApp/        Activity、清单、图标、资源
   `SharedPrefsCookieJar` 持久化；登录响应 JSON 里的 `accessToken` 不落盘。
 - 服务地址由用户在登录页填写，**要填到 `/reader3` 为止**，且必须与后端
   `COOKIE_PATH` 前缀一致；子路径部署时形如 `https://example.org/read/reader3`。
+- **本地书导入**：两个端点 `/uploadTxtBook`、`/uploadEpubBook`，multipart 字段名都是
+  `file`，按文件扩展名选择端点；必须用 `HttpRequest.UPLOAD_TIMEOUT_MILLIS`
+  （默认 120s 不够传几十 MB）。文件选择在 `rememberBookFilePicker`（expect/actual）。
 - **SSE 端点**（`/searchBookMultiSSE` 等）的帧约定：默认帧是业务 JSON
   （搜索是 `{lastIndex, data:[SearchBook]}`），命名 `error` 帧是 `{errorMsg}`，
   命名 `end` 帧收尾。`error` 帧与传输层失败都表现为 error 事件，必须区分：
@@ -93,6 +96,8 @@ androidApp/        Activity、清单、图标、资源
 - **时间戳单位不统一**：后端部分字段是毫秒、部分是秒，用之前先确认来源接口。
 - **`COOKIE_SECURE=auto`** 时，非回环 Host 下发的会话 Cookie 会带 `Secure`，
   明文 HTTP 下客户端不会回传。调试用回环地址可规避。
+- **分组排序是整表覆盖**：`/saveBookGroupOrder` 不在数组里的分组会被**删除**
+  （并清掉书籍上的对应位），所以必须提交完整分组列表，`orderNo` 按数组下标重写。
 - **分组批量语义**：`/saveBookGroupId` 是**单本**「设置分组」（`groupId=0` 清空）；
   `/addBookGroupMulti` / `removeBookGroupMulti` 是位域 OR/AND-NOT，不是替换。
   「批量移动」要逐本调 `saveBookGroupId`，否则会变成「加组」而不是「移到该组」。
@@ -120,6 +125,9 @@ androidApp/        Activity、清单、图标、资源
   目录在 `ui/catalog/`，详情与阅读器共用，靠 `onSelectChapter(原始下标)` 回传。
 - 书架交互：点击阅读、长按进详情；多选走顶栏「更多 → 选择书籍」，
   不要在长按上再叠多选手势。
+- 书架排序是独立模式：入口在「更多 → 排序书籍」，进入后清空分组/关键词筛选
+  （排序作用于整架，筛选会让下标错位），右侧三线手柄拖动实时换位，顶栏「保存」
+  用 `saveBooks` 整架提交。仅列表模式提供。
 - 列表/网格是全局偏好（`deps.layout`），发现与搜索结果必须跟随，
   不要各自维护一份视图状态；切换入口在书架顶栏「更多」菜单里，不占顶栏按钮。
 - 多选角标用 `SelectionBadge` 压在封面左上角（半透明底 + 白描边），

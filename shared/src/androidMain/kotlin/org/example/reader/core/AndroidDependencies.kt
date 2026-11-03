@@ -12,6 +12,7 @@ import org.example.reader.core.session.AuthState
 import org.example.reader.core.session.ServerConfig
 import org.example.reader.core.session.SessionStore
 import org.example.reader.core.settings.LayoutPreference
+import org.example.reader.core.settings.ReaderSettingsStore
 import org.example.reader.core.settings.SettingsKeys
 import org.example.reader.core.settings.SharedPrefsKeyValueStore
 
@@ -28,6 +29,8 @@ class AndroidDependencies(context: Context) : AppDependencies {
     override val settings = SharedPrefsKeyValueStore(appContext)
 
     override val layout = LayoutPreference(settings)
+
+    override val readerSettings = ReaderSettingsStore(settings)
 
     private val cookieJar = SharedPrefsCookieJar(appContext)
 

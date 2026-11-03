@@ -76,6 +76,8 @@ androidApp/        Activity、清单、图标、资源
   `SharedPrefsCookieJar` 持久化；登录响应 JSON 里的 `accessToken` 不落盘。
 - 服务地址由用户在登录页填写，**要填到 `/reader3` 为止**，且必须与后端
   `COOKIE_PATH` 前缀一致；子路径部署时形如 `https://example.org/read/reader3`。
+- **系统栏图标明暗**：阅读器切暗色主题时用 `SystemBarsAppearance(lightContent, restoreContent)`
+  （commonMain expect / androidMain actual），离开页面自动还原；不接的话状态栏图标会「隐形」。
 - **本地书导入**：两个端点 `/uploadTxtBook`、`/uploadEpubBook`，multipart 字段名都是
   `file`，按文件扩展名选择端点；必须用 `HttpRequest.UPLOAD_TIMEOUT_MILLIS`
   （默认 120s 不够传几十 MB）。文件选择在 `rememberBookFilePicker`（expect/actual）。
@@ -121,6 +123,15 @@ androidApp/        Activity、清单、图标、资源
 - 书籍卡片与列表行是共享组件：`BookListRow`（书架、最近）、
   `BookResultGrid` + `BookResultCard`（发现、搜索）。加新列表页先复用，
   不要在页面里复制一份布局。
+- 阅读器控件形态固定，改动前先看齐这两套参照：
+  顶栏是 legado(MD3) 的悬浮圆钮 + 书名/章名，底栏是番茄小说的
+  「上一章 — 全书进度滑块 — 下一章」+ 五项功能（全文搜索/自动翻页/目录/朗读/设置）。
+  新增入口优先塞进这五格或「更多」菜单，不要另起一排按钮。
+- 阅读器配色只认 `ReaderPalette`（`ui/reader/ReaderPalette.kt`，与前端
+  `utils/readerTheme.ts` 同序同色）。工具条、圆钮、滑块一律取 `palette.*`，
+  **不要用 MaterialTheme 的颜色**——否则暗色正文下会出现亮色工具条。
+- 阅读器设置只有一个来源 `deps.readerSettings`（`core/settings/ReaderSettings.kt`），
+  面板改一项正文立即重排；新增配置项要同时补 `SettingsKeys` 与 load/update。
 - 阅读器是沉浸式：正文全屏、点正文切换控件；**正文必须避开系统栏**
   （`WindowInsets.statusBars/navigationBars`），工具条只做覆盖层。
   工具条自身要消费点击（`pointerInput { detectTapGestures { } }`），否则点空白处会
@@ -176,20 +187,27 @@ Kotlin 的块注释可嵌套，KDoc 里写 `/reader3/*` 会开启一个未闭合
 网络失败先确认请求到底有没有到达后端（看后端日志），再看客户端状态码；
 `403` 不一定来自业务服务，也可能是链路上的代理/网关按白名单拒绝。
 
-**6. 系统返回直接退桌面**
+**6. 覆盖式工具条会与正文叠字**
+
+控件不参与布局时，正文会滚到它下面。工具条必须自己画底：
+同色渐变（`Brush.verticalGradient`，≈94% 处才开始透明）或实色 Surface，
+否则书名/章名会和正文糊在一起。改 `ModalBottomSheet` 的 `containerColor` 时
+**必须同时提供 `LocalContentColor`**，否则标签仍是外层主题的深色，暗面板上整片看不见。
+
+**7. 系统返回直接退桌面**
 
 Compose 不会自动把系统返回映射到页面栈。每个覆盖层必须：
 栈式页面在 `MainShell` 统一 `AppBackHandler(enabled = overlays.isNotEmpty())`；
 页面内部状态（书架多选、搜索输入等）各自再挂一个更靠近的 `AppBackHandler`。
 早期的表现是「阅读器里按返回直接退出应用」。
 
-**7. `saveBookGroup` 只回 `"success"`，不回分组实体**
+**8. `saveBookGroup` 只回 `"success"`，不回分组实体**
 
 新建分组后需要 id（比如「建完直接移动过去」）时，必须回查
 `/getBookGroups` 按名字找。把它声明成 `ApiResult<BookGroup>` 会解码失败，
 表现为「服务端已建组、客户端报错且列表不刷新」。
 
-**8. `encodeDefaults = true` 会把默认值写进请求体**
+**9. `encodeDefaults = true` 会把默认值写进请求体**
 
 `ReaderJson` 开启了 `encodeDefaults`（显式 null 反而被裁掉）。直接序列化完整
 `Book` 去调 `/saveBook`，会带上 `durChapterIndex: 0`、`group: 0`，

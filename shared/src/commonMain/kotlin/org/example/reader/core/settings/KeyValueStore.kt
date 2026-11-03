@@ -42,6 +42,8 @@ object SettingsKeys {
     const val READER_PAGE_WIDTH = "reader_page_width"
     const val READER_SHOW_CHAPTER_IMAGES = "reader_show_chapter_images"
     const val READER_PRELOAD = "reader_preload"
+    const val READER_BRIGHTNESS = "reader_brightness"
+    const val READER_EYE_CARE = "reader_eye_care"
 
     // 应用
     const val APP_THEME = "app_theme"

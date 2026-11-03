@@ -65,10 +65,17 @@ data class ChapterContentRequest(
     val knownVersionId: Long? = null,
 )
 
+/** 批量取正文的单章：字段名对齐后端 `BatchContentChapter`（`chapterUrl` 不是 `url`）。 */
+@Serializable
+data class BatchContentChapterRequest(
+    val index: Int,
+    @SerialName("chapterUrl") val chapterUrl: String,
+)
+
 @Serializable
 data class BatchContentsRequest(
     val bookId: String,
-    val chapters: List<org.example.reader.core.model.BookChapter>,
+    val chapters: List<BatchContentChapterRequest>,
 )
 
 @Serializable

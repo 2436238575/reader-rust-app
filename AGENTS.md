@@ -81,6 +81,9 @@ androidApp/        Activity、清单、图标、资源
 - **本地书导入**：两个端点 `/uploadTxtBook`、`/uploadEpubBook`，multipart 字段名都是
   `file`，按文件扩展名选择端点；必须用 `HttpRequest.UPLOAD_TIMEOUT_MILLIS`
   （默认 120s 不够传几十 MB）。文件选择在 `rememberBookFilePicker`（expect/actual）。
+- **批量正文接口**：`/getBookContents` 的 `chapters` 元素是
+  `{index, chapterUrl}`（**不是** `url`），响应是 `[{index, data, error}]`，
+  单章失败只写 `error`；单次最多 10 章。
 - **SSE 端点**（`/searchBookMultiSSE` 等）的帧约定：默认帧是业务 JSON
   （搜索是 `{lastIndex, data:[SearchBook]}`），命名 `error` 帧是 `{errorMsg}`，
   命名 `end` 帧收尾。`error` 帧与传输层失败都表现为 error 事件，必须区分：
@@ -130,6 +133,13 @@ androidApp/        Activity、清单、图标、资源
 - 阅读器配色只认 `ReaderPalette`（`ui/reader/ReaderPalette.kt`，与前端
   `utils/readerTheme.ts` 同序同色）。工具条、圆钮、滑块一律取 `palette.*`，
   **不要用 MaterialTheme 的颜色**——否则暗色正文下会出现亮色工具条。
+- 阅读进度是**章内万分比**：滚动位置用「首个可见项下标 + 项内位移 / 总项数」估算
+  （`LazyListState.chapterFraction()`），VM 内按 10s 节流上报，离页 `flushProgress()`。
+  恢复走两条路：新开书用 `state.pendingScrollFraction`（服务端 `durChapterPos`），
+  同一次会话内离开再回来用 `viewModel.entryFraction()`——**ViewModel 按 bookId 缓存，
+  重进不会重建**，只靠 pendingScrollFraction 会退回章首并把进度冲成 0。
+- 正文缓存是 VM 内的 LRU（8 章）+ 进章后预取相邻章（`/getBookContents`）。
+  缓存 key 是目录下标；`刷新本章` 必须 `force = true` 绕过缓存。
 - 阅读器设置只有一个来源 `deps.readerSettings`（`core/settings/ReaderSettings.kt`），
   面板改一项正文立即重排；新增配置项要同时补 `SettingsKeys` 与 load/update。
 - 阅读器是沉浸式：正文全屏、点正文切换控件；**正文必须避开系统栏**
@@ -194,20 +204,27 @@ Kotlin 的块注释可嵌套，KDoc 里写 `/reader3/*` 会开启一个未闭合
 否则书名/章名会和正文糊在一起。改 `ModalBottomSheet` 的 `containerColor` 时
 **必须同时提供 `LocalContentColor`**，否则标签仍是外层主题的深色，暗面板上整片看不见。
 
-**7. 系统返回直接退桌面**
+**7. 缓存型 ViewModel 会吃掉「重新进入」的初始化**
+
+阅读器 ViewModel 按 bookId 注册在 Activity 作用域，离开再进来不会重建，
+`init { open() }` 也不会再跑。凡是「每次进入都该重新做一次」的事
+（恢复阅读位置、重读进度、重新拉目录），都要么走 `entryFraction()` 这类一次性出口，
+要么在进入时显式触发，不要指望 init。
+
+**8. 系统返回直接退桌面**
 
 Compose 不会自动把系统返回映射到页面栈。每个覆盖层必须：
 栈式页面在 `MainShell` 统一 `AppBackHandler(enabled = overlays.isNotEmpty())`；
 页面内部状态（书架多选、搜索输入等）各自再挂一个更靠近的 `AppBackHandler`。
 早期的表现是「阅读器里按返回直接退出应用」。
 
-**8. `saveBookGroup` 只回 `"success"`，不回分组实体**
+**9. `saveBookGroup` 只回 `"success"`，不回分组实体**
 
 新建分组后需要 id（比如「建完直接移动过去」）时，必须回查
 `/getBookGroups` 按名字找。把它声明成 `ApiResult<BookGroup>` 会解码失败，
 表现为「服务端已建组、客户端报错且列表不刷新」。
 
-**9. `encodeDefaults = true` 会把默认值写进请求体**
+**10. `encodeDefaults = true` 会把默认值写进请求体**
 
 `ReaderJson` 开启了 `encodeDefaults`（显式 null 反而被裁掉）。直接序列化完整
 `Book` 去调 `/saveBook`，会带上 `durChapterIndex: 0`、`group: 0`，

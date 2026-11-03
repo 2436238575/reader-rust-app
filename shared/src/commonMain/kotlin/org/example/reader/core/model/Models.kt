@@ -203,12 +203,11 @@ data class ChapterContent(
 /** 批量取正文里单章的结果：某章失败只写 `error`，不影响其他章节。 */
 @Serializable
 data class BatchChapterContent(
-    val content: String = "",
+    /** 请求里带过去的章节下标，用于对号入座（后端按请求顺序回，但仍以此为准）。 */
+    val index: Int = 0,
+    /** 成功时是完整正文；失败时为 null 且 `error` 有值，互不影响其它章。 */
+    val data: ChapterContent? = null,
     val error: String? = null,
-    val edited: Boolean = false,
-    @SerialName("versionId") val versionId: Long? = null,
-    @SerialName("versionKind") val versionKind: String? = null,
-    val unchanged: Boolean = false,
 )
 
 /** 缓存占用统计。 */

@@ -63,12 +63,14 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -85,6 +87,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import org.example.reader.core.AppDependencies
 import org.example.reader.core.model.Book
@@ -143,11 +146,34 @@ fun ReaderScreen(
 
     LaunchedEffect(startIndex) { viewModel.applyStartIndex(startIndex) }
 
-    // 换章后回到顶部，否则新章正文停在上一章的滚动位置。
+    // 进入阅读器时要恢复的位置。ViewModel 按 bookId 缓存，重进不会重建，
+    // 所以只在本次进入的第一次定位时使用，之后换章一律从章首开始。
+    var pendingEntryRestore by remember { mutableStateOf(true) }
+
     LaunchedEffect(state.currentIndex, state.paragraphs) {
-        if (state.paragraphs.isNotEmpty()) {
+        if (state.paragraphs.isEmpty()) return@LaunchedEffect
+        val restore = state.pendingScrollFraction
+            ?: if (pendingEntryRestore) viewModel.entryFraction() else 0f
+        pendingEntryRestore = false
+        if (restore > 0.001f) {
+            // 列表还没量出项数时 totalItemsCount 是 0，等它稳定再定位
+            val total = snapshotFlow { listState.layoutInfo.totalItemsCount }.first { it > 0 }
+            val target = (restore * total).toInt().coerceIn(0, total - 1)
+            listState.scrollToItem(target)
+            viewModel.consumePendingScroll()
+        } else {
             listState.scrollToItem(0)
         }
+    }
+
+    // 章内位置回传：VM 内部按 10s 节流落库，不必在这里控频
+    LaunchedEffect(listState, state.currentIndex) {
+        snapshotFlow { listState.chapterFraction() }.collect { viewModel.onScrolled(it) }
+    }
+
+    // 离开阅读器（返回 / 切页）时立刻落库，不等节流窗口
+    DisposableEffect(Unit) {
+        onDispose { viewModel.flushProgress() }
     }
 
     // 返回键：先关目录 → 再关面板 → 再收控件 → 最后才退出阅读器
@@ -631,7 +657,7 @@ private fun ReaderBottomBar(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceEvenly,
             ) {
-                BarAction(Icons.Filled.Search, "全文搜索", palette) { onHint("全文搜索将在 P2 接入") }
+                BarAction(Icons.Filled.Search, "搜索", palette) { onHint("书内搜索将在 P2 接入") }
                 BarAction(ReaderIcons.AutoPage, "自动翻页", palette) { onHint("自动翻页将在 P1-8 接入") }
                 BarAction(Icons.AutoMirrored.Filled.List, "目录", palette, onOpenCatalog)
                 BarAction(ReaderIcons.VolumeUp, "朗读", palette) { onHint("朗读将在 P3 接入") }
@@ -670,4 +696,20 @@ private fun BarAction(
             maxLines = 1,
         )
     }
+}
+
+/**
+ * 章内阅读位置（0..1）。
+ *
+ * LazyColumn 拿不到像素级总高度，用「首个可见项下标 + 项内位移 / 总项数」估算：
+ * 段落高度接近，误差在一两句之内，足够表达万分比进度。
+ */
+private fun androidx.compose.foundation.lazy.LazyListState.chapterFraction(): Float {
+    val info = layoutInfo
+    val total = info.totalItemsCount
+    if (total <= 0) return 0f
+    val first = info.visibleItemsInfo.firstOrNull() ?: return 0f
+    val itemHeight = first.size.toFloat().coerceAtLeast(1f)
+    val scrolled = first.index + (info.viewportStartOffset - first.offset).toFloat() / itemHeight
+    return (scrolled / total).coerceIn(0f, 1f)
 }

@@ -27,6 +27,9 @@ import org.example.reader.core.model.UserInfoHolder
  * - 401 由传输层的 OkHttp `Authenticator` 静默续期并自动重放，
  *   走到这里的 401 表示刷新也失败了（会话真的失效），调用方去拉起登录页。
  */
+/** 与后端 `MAX_BATCH_CONTENT_CHAPTERS` 对齐。 */
+private const val MAX_BATCH_CONTENT = 10
+
 class ReaderApi(
     // inline 的响应解析会触及这两个成员，必须标 @PublishedApi internal，
     // 否则 Kotlin 拒绝「public inline 访问 private 成员」。
@@ -180,12 +183,23 @@ class ReaderApi(
         ),
     )
 
+    /**
+     * 批量取正文（预加载用）。
+     *
+     * 后端单次上限 10 章；`index` 必须原样回传章节自身下标，
+     * 本地书靠它定位，网络书靠它对齐结果。
+     */
     suspend fun getBookContents(bookId: String, chapters: List<BookChapter>): ApiResult<List<BatchChapterContent>> =
         post(
             "/getBookContents",
             json.encodeToString(
                 BatchContentsRequest.serializer(),
-                BatchContentsRequest(bookId, chapters),
+                BatchContentsRequest(
+                    bookId = bookId,
+                    chapters = chapters.take(MAX_BATCH_CONTENT).map {
+                        BatchContentChapterRequest(index = it.index, chapterUrl = it.url)
+                    },
+                ),
             ),
         )
 

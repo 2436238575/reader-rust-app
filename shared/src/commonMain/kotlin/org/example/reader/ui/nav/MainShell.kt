@@ -134,6 +134,7 @@ fun MainShell(deps: AppDependencies, modifier: Modifier = Modifier) {
                 bookId = screen.bookId,
                 startIndex = screen.startIndex,
                 onBack = ::popOverlay,
+                onShowDetail = ::showDetail,
                 modifier = Modifier.fillMaxSize(),
             )
 

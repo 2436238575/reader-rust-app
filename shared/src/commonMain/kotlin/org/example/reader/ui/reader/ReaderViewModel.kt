@@ -23,7 +23,6 @@ data class ReaderUiState(
     val error: String? = null,
     /** 正文来自用户编辑版（而非上游）；界面上给个轻标记。 */
     val isEdited: Boolean = false,
-    val showCatalog: Boolean = false,
 ) {
     val currentChapter: BookChapter? get() = chapters.getOrNull(currentIndex)
     val hasPrev: Boolean get() = currentIndex > 0
@@ -130,7 +129,6 @@ class ReaderViewModel(
 
     fun goToChapter(index: Int) {
         if (index !in _state.value.chapters.indices) return
-        _state.update { it.copy(showCatalog = false) }
         loadContent(index)
     }
 
@@ -140,6 +138,15 @@ class ReaderViewModel(
      * 章节列表可能还没回来：先记 pending，由 `open()` 消费；
      * 已就绪则直接加载。ViewModel 按 bookId 缓存，所以不能只靠构造参数。
      */
+    /** 已应用过的起始章：从详情返回阅读器时避免把进度又拉回进入时那一章。 */
+    private var lastAppliedStartIndex: Int? = null
+
+    fun applyStartIndex(index: Int?) {
+        if (index == null || index == lastAppliedStartIndex) return
+        lastAppliedStartIndex = index
+        openAt(index)
+    }
+
     fun openAt(index: Int) {
         val chapters = _state.value.chapters
         if (chapters.isEmpty()) {
@@ -152,14 +159,6 @@ class ReaderViewModel(
     fun nextChapter() = goToChapter(_state.value.currentIndex + 1)
 
     fun prevChapter() = goToChapter(_state.value.currentIndex - 1)
-
-    fun toggleCatalog() {
-        _state.update { it.copy(showCatalog = !it.showCatalog) }
-    }
-
-    fun dismissCatalog() {
-        _state.update { it.copy(showCatalog = false) }
-    }
 
     fun refreshChapter() {
         loadContent(_state.value.currentIndex)

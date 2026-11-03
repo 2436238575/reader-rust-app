@@ -121,6 +121,12 @@ androidApp/        Activity、清单、图标、资源
 - 书籍卡片与列表行是共享组件：`BookListRow`（书架、最近）、
   `BookResultGrid` + `BookResultCard`（发现、搜索）。加新列表页先复用，
   不要在页面里复制一份布局。
+- 阅读器是沉浸式：正文全屏、点正文切换控件；**正文必须避开系统栏**
+  （`WindowInsets.statusBars/navigationBars`），工具条只做覆盖层。
+  工具条自身要消费点击（`pointerInput { detectTapGestures { } }`），否则点空白处会
+  穿透到正文把控件又收起。
+- 阅读器返回层级固定：目录页 → 面板 → 收起控件 → 退出。新增面板/页面要接进这一链。
+- 阅读器面板走 `ReaderPanel` + `ModalBottomSheet` 容器，具体内容按阶段填充。
 - **详情与目录都是独立页面**，不是弹层/底部面板。详情只放书籍元信息；
   目录在 `ui/catalog/`，详情与阅读器共用，靠 `onSelectChapter(原始下标)` 回传。
 - 书架交互：点击阅读、长按进详情；多选走顶栏「更多 → 选择书籍」，

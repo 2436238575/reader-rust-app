@@ -39,6 +39,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 import org.example.reader.core.settings.ReaderSettings
+import kotlin.math.roundToInt
 
 /**
  * 左右翻页。
@@ -51,6 +52,10 @@ import org.example.reader.core.settings.ReaderSettings
  * - 横滑翻页
  * - 点左侧 1/3 上一页（首页切上一章），点右侧 1/3 下一页（末页切下一章），
  *   点中间呼出/收起控件
+ *
+ * 进度口径（**唯一**）：页首段落 / 全章段数。上报与恢复共用
+ * [pageStartFraction] 与 [paragraphAtFraction] 这一对互逆函数——
+ * 只要两端点不同源，「退出重进」就会稳定偏移若干页（A4 就是这么来的）。
  *
  * 正文只避开系统栏：工具条是可收起的覆盖层，不为它预留高度，
  * 收起控件后整页都可见，与竖排模式一致。
@@ -202,7 +207,7 @@ private fun PagedContent(
     // 进入本页时定位一次：比例 → 段落 → 它所在的页
     LaunchedEffect(Unit) {
         val target = if (restoreFraction > 0.001f) {
-            val targetParagraph = (restoreFraction * state.paragraphs.size).toInt()
+            val targetParagraph = paragraphAtFraction(restoreFraction, state.paragraphs.size)
             pages.indexOfLast { it.startParagraph <= targetParagraph }.coerceIn(0, pages.lastIndex)
         } else {
             0
@@ -211,15 +216,16 @@ private fun PagedContent(
         if (restoreFraction > 0.001f) onRestoreConsumed()
     }
 
-    // 翻页即进度：按本页结束位置对应的段落比例，与竖排模式同一口径
+    // 翻页即进度：按本页**页首**段落对应的比例，与恢复时是同一个端点。
+    //
+    // 这里必须与 [pageStartFraction] / [paragraphAtFraction] 的映射严格互逆：
+    // 旧实现上报页尾（`startParagraph + blocks.size`）、恢复却按页首落页，
+    // 于是「退出 → 重进」每次都前进一页（A4，末页除外的假象来自末页没有下一页可进）。
     LaunchedEffect(pagerState, pages) {
         snapshotFlow { pagerState.currentPage }.collect { index ->
             val page = pages.getOrNull(index) ?: return@collect
             val total = state.paragraphs.size
-            if (total > 0) {
-                val end = page.startParagraph + page.blocks.size
-                onProgress((end.toFloat() / total).coerceIn(0f, 1f))
-            }
+            if (total > 0) onProgress(pageStartFraction(page.startParagraph, total))
         }
     }
 
@@ -282,9 +288,39 @@ private fun PagedContent(
 private data class ReaderPage(
     val blocks: List<String>,
     val showTitle: Boolean,
-    /** 本页第一段在整章里的下标：进度与恢复都按段落算，不按页。 */
+    /**
+     * 本页**第一段**在整章里的下标：进度与恢复的唯一基准。
+     *
+     * 页尾（`startParagraph + blocks.size`）**不是**可用的位置端点——它同时是下一页的页首，
+     * 按页尾存、按页首读会让每次「退出重进」前进一页（A4）。
+     */
     val startParagraph: Int,
 )
+
+/**
+ * 段落下标 → 章内比例（0..1），**页首口径**。
+ *
+ * 与 [paragraphAtFraction] 严格互逆：`paragraphAtFraction(pageStartFraction(p, total), total) == p`。
+ * 上报进度（页首）与恢复位置（比例 → 段落）必须共用这一对函数，否则端点定义会再次分叉。
+ */
+private fun pageStartFraction(startParagraph: Int, totalParagraphs: Int): Float =
+    if (totalParagraphs <= 0) 0f else (startParagraph.toFloat() / totalParagraphs).coerceIn(0f, 1f)
+
+/**
+ * 章内比例（0..1）→ 段落下标，[pageStartFraction] 的逆运算。
+ *
+ * 用**四舍五入**而不是截断：比例在服务端要经 `× 10000` 取整再回来
+ * （`durChapterPos`），截断会把 3/7 这类值算回 2，导致恢复时反而退一页。
+ * 上界取 `totalParagraphs`（而不是 `total - 1`）：`1f`（「上一章」落章末）要能取到末页。
+ */
+private fun paragraphAtFraction(fraction: Float, totalParagraphs: Int): Int =
+    if (totalParagraphs <= 0) {
+        0
+    } else {
+        (fraction.coerceIn(0f, 1f) * totalParagraphs)
+            .roundToInt()
+            .coerceIn(0, totalParagraphs)
+    }
 
 /**
  * 按段落装箱分页。

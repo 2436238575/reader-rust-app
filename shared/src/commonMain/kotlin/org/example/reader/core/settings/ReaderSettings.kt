@@ -23,10 +23,31 @@ enum class ReadMethod(val label: String, val key: String) {
 }
 
 /**
+ * 自动阅读的滚动方式。取值与前端 `readerConfig.autoPageMode` 逐项对齐，
+ * 直接存字符串（`pixel` / `paragraph`），两边同一份配置可互换。
+ */
+object AutoPageMode {
+    /** 逐帧滚动，速度由 `scrollPixel`（每帧像素）决定。 */
+    const val PIXEL = "pixel"
+
+    /** 按段落滚动，每段停留 `pageSpeed` 毫秒。 */
+    const val PARAGRAPH = "paragraph"
+
+    /**
+     * 归一化落盘值。
+     *
+     * 旧版本、Web 端同步或被手改过的值都可能是任意字符串；不认识就回落到
+     * 像素滚动（前端默认值），不要抛异常也不要留一个渲染层无法识别的分支。
+     */
+    fun normalize(value: String?): String =
+        if (value == PARAGRAPH) PARAGRAPH else PIXEL
+}
+
+/**
  * 阅读器排版设置。
  *
- * 默认值取自前端 `stores/readerConfig.ts`（字号 18 / 行高 1.8 / 段距 0.2 / 首屏上下滑动），
- * 保证同一个人在两端看到的正文密度一致。
+ * 默认值取自前端 `stores/readerConfig.ts`（字号 18 / 行高 1.8 / 段距 0.2 / 首屏上下滑动 /
+ * 像素滚动 1px / 每段 1000ms），保证同一个人在两端看到的正文密度与滚动速度一致。
  */
 data class ReaderSettings(
     val fontSize: Int = DEFAULT_FONT_SIZE,
@@ -37,6 +58,12 @@ data class ReaderSettings(
     /** 亮度 0.2–1.0；1 表示不额外压暗（不触碰系统亮度）。 */
     val brightness: Float = 1f,
     val eyeCare: Boolean = false,
+    /** 自动阅读滚动方式，取值见 [AutoPageMode]。 */
+    val autoPageMode: String = DEFAULT_AUTO_PAGE_MODE,
+    /** 像素滚动时**每帧**滚动的像素数 1..10；不做帧率补偿，60Hz 下 1px ≈ 60px/s。 */
+    val scrollPixel: Int = DEFAULT_SCROLL_PIXEL,
+    /** 段落滚动时每段停留的毫秒数 100..5000。 */
+    val pageSpeed: Int = DEFAULT_PAGE_SPEED,
 ) {
     companion object {
         const val DEFAULT_FONT_SIZE = 18
@@ -57,6 +84,15 @@ data class ReaderSettings(
          */
         const val MIN_BRIGHTNESS = 0.01f
         const val MAX_BRIGHTNESS = 1f
+
+        // 自动阅读（区间与前端 `ReadSettings.vue` 的 step 上下界一致）
+        const val DEFAULT_AUTO_PAGE_MODE = AutoPageMode.PIXEL
+        const val DEFAULT_SCROLL_PIXEL = 1
+        const val MIN_SCROLL_PIXEL = 1
+        const val MAX_SCROLL_PIXEL = 10
+        const val DEFAULT_PAGE_SPEED = 1000
+        const val MIN_PAGE_SPEED = 100
+        const val MAX_PAGE_SPEED = 5000
 
         /** 主题序号合法区间上界。主题表的唯一定义在 [ReaderPalettes]，这里只取长度。 */
         val MAX_THEME_INDEX: Int = ReaderPalettes.lastIndex
@@ -128,6 +164,32 @@ class ReaderSettingsStore(private val store: KeyValueStore) {
 
     fun setEyeCare(enabled: Boolean) = update { it.copy(eyeCare = enabled) }
 
+    /**
+     * 切换自动阅读的滚动方式（像素 / 段落）。
+     *
+     * 非法值一律归一到像素滚动，不写盘任意字符串：渲染层只认 [AutoPageMode] 两个常量，
+     * 多出一个值会让 `when` 落到 else 分支。
+     */
+    fun setAutoPageMode(mode: String) =
+        update { it.copy(autoPageMode = AutoPageMode.normalize(mode)) }
+
+    /** 像素滚动的每帧像素数；越界值夹到 1..10（与前端 step 的上下界一致）。 */
+    fun setScrollPixel(value: Int) = update {
+        it.copy(
+            scrollPixel = value.coerceIn(
+                ReaderSettings.MIN_SCROLL_PIXEL,
+                ReaderSettings.MAX_SCROLL_PIXEL,
+            ),
+        )
+    }
+
+    /** 段落滚动的每段停留毫秒数；越界值夹到 100..5000。 */
+    fun setPageSpeed(value: Int) = update {
+        it.copy(
+            pageSpeed = value.coerceIn(ReaderSettings.MIN_PAGE_SPEED, ReaderSettings.MAX_PAGE_SPEED),
+        )
+    }
+
     fun reset() = update { ReaderSettings() }
 
     /**
@@ -163,6 +225,9 @@ class ReaderSettingsStore(private val store: KeyValueStore) {
         store.putInt(SettingsKeys.READER_THEME_INDEX, next.themeIndex)
         store.putString(SettingsKeys.READER_METHOD, next.method.key)
         store.putBoolean(SettingsKeys.READER_EYE_CARE, next.eyeCare)
+        store.putString(SettingsKeys.READER_AUTO_PAGE_MODE, next.autoPageMode)
+        store.putInt(SettingsKeys.READER_SCROLL_PIXEL, next.scrollPixel)
+        store.putInt(SettingsKeys.READER_PAGE_SPEED, next.pageSpeed)
     }
 
     /**
@@ -198,6 +263,15 @@ class ReaderSettingsStore(private val store: KeyValueStore) {
             // 亮度不落盘也不读盘：初值用 MAX（= 跟随系统），进阅读器时再用实际系统亮度覆盖
             brightness = ReaderSettings.MAX_BRIGHTNESS,
             eyeCare = store.getBoolean(SettingsKeys.READER_EYE_CARE, false),
+            autoPageMode = AutoPageMode.normalize(
+                store.getString(SettingsKeys.READER_AUTO_PAGE_MODE),
+            ),
+            scrollPixel = store
+                .getInt(SettingsKeys.READER_SCROLL_PIXEL, ReaderSettings.DEFAULT_SCROLL_PIXEL)
+                .coerceIn(ReaderSettings.MIN_SCROLL_PIXEL, ReaderSettings.MAX_SCROLL_PIXEL),
+            pageSpeed = store
+                .getInt(SettingsKeys.READER_PAGE_SPEED, ReaderSettings.DEFAULT_PAGE_SPEED)
+                .coerceIn(ReaderSettings.MIN_PAGE_SPEED, ReaderSettings.MAX_PAGE_SPEED),
         )
     }
 }

@@ -19,7 +19,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.FilterChip
@@ -46,6 +48,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import org.example.reader.core.settings.AutoPageMode
 import org.example.reader.core.settings.ReadMethod
 import org.example.reader.core.settings.ReaderSettings
 import kotlin.math.roundToInt
@@ -57,8 +60,21 @@ import kotlin.math.roundToInt
  * 每组一行、不加分组标题，靠间距区分。控件本身全部用 Material 3 组件
  * （Slider / SegmentedButton / FilterChip / OutlinedButton）。
  *
- * 未接入的入口（系统字体、评论设置、更多、自动阅读）不隐藏，
+ * 未接入的入口（系统字体、评论设置、更多）不隐藏，
  * 点按给出明确提示，避免用户以为是坏的。
+ *
+ * 「自动阅读」（P1-8）是真控件：滚动方式两个 chip + 各模式对应的速度滑杆。
+ * 开/关不在面板里 —— 底栏「自动翻页」是唯一开关，面板只负责「怎么滚」，
+ * 免得两处各维护一份 `autoReading` 状态。
+ *
+ * 容器（R-22）：`ModalBottomSheet` 只按 `safeDrawing` 让出系统栏与输入法高度，
+ * 内容自身不滚动，键盘弹起后可见高度变小，底部几行就被推出可视区、拖不到；
+ * 所以内容列必须自己可滚（insets 已由 sheet 让出，见下方 `Column` 的注释）。
+ *
+ * ⚠️ 往这个面板加内容的硬约束：**不要引入同向可滚动容器**
+ * （`LazyColumn` / 内层 `verticalScroll` / `fillMaxHeight`）。外层已经是
+ * `verticalScroll`，再嵌一层同向滚动会在运行期崩 `infinity maximum height`，
+ * 而且编译期看不出来。逐行排布用 `Column` / `Row` 即可（字号滑杆、自动阅读组都是这么做的）。
  */
 @Composable
 fun ReaderSettingsPanel(
@@ -77,6 +93,16 @@ fun ReaderSettingsPanel(
     onEyeCareChange: (Boolean) -> Unit,
     onLineHeightChange: (Float) -> Unit,
     onParagraphSpacingChange: (Float) -> Unit,
+    /**
+     * 自动阅读（P1-8）三个回调。
+     *
+     * 由 `ReaderScreen` 的调用点接到 `deps.readerSettings::setAutoPageMode` /
+     * `::setScrollPixel` / `::setPageSpeed`。**故意不给默认值**：这三个是功能必需的回调，
+     * 留默认值会让「调用点漏传 → chip 能点但设置不生效」静默通过编译。
+     */
+    onAutoPageModeChange: (String) -> Unit,
+    onScrollPixelChange: (Int) -> Unit,
+    onPageSpeedChange: (Int) -> Unit,
     onReset: () -> Unit,
     onHint: (String) -> Unit,
     modifier: Modifier = Modifier,
@@ -86,6 +112,14 @@ fun ReaderSettingsPanel(
     Column(
         modifier = modifier
             .fillMaxWidth()
+            // 只需要「能滚」：ModalBottomSheet 的内容容器已经用
+            // `BottomSheetDefaults.modalWindowInsets`（= safeDrawing ∋ ime）做过
+            // `windowInsetsPadding`，且 windowInsetsPadding **会把 inset 消费掉**，
+            // 这里再加 `.imePadding()` 拿到的是 0（实测无任何效果，属死代码）。
+            // 真正的缺口是内容自身不滚动 → 键盘弹起后底部几行被推出可视区（R-22）。
+            // ⚠️ 保守取舍：M3 sheet 内部可能已自行处理 IME，个别版本/机型若实测仍有遮挡，
+            // 再在此处补 `.imePadding()`（顺序必须是 imePadding → verticalScroll → padding）。
+            .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp)
             .padding(bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -156,12 +190,17 @@ fun ReaderSettingsPanel(
             }
         }
 
-        TextButton(
-            onClick = { onHint("自动阅读将在 P1-8 接入") },
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Text("开启自动阅读", style = MaterialTheme.typography.labelLarge)
-        }
+        AutoReadGroup(
+            autoPageMode = settings.autoPageMode,
+            scrollPixel = settings.scrollPixel,
+            pageSpeed = settings.pageSpeed,
+            // 横翻/双页下底栏按钮只会弹提示，这里提前把原因写出来，别让人白调参数
+            autoReadAvailable = settings.method != ReadMethod.Horizontal &&
+                settings.method != ReadMethod.DualPage,
+            onAutoPageModeChange = onAutoPageModeChange,
+            onScrollPixelChange = onScrollPixelChange,
+            onPageSpeedChange = onPageSpeedChange,
+        )
     }
 }
 
@@ -396,6 +435,145 @@ private fun StepperRow(
         )
         StepButton(label = "＋", onClick = onPlus)
     }
+}
+
+/**
+ * 「自动阅读」配置组（P1-8）。
+ *
+ * 只配「怎么滚」，不配「要不要滚」：开关是底栏「自动翻页」那一个按钮
+ * （`ReaderScreen.autoReading`），面板里再放一个开关就会出现两处状态各自为政。
+ *
+ * 两种滚动方式互斥显示各自的滑杆，而不是同时列出两条：
+ * - 像素滚动：每帧步长 1..10 px（`scrollPixel`），速度随帧率，真机 60Hz ≈ 步长×60 px/s；
+ * - 段落滚动：每段停留 100..5000 ms（`pageSpeed`），一整段跳到下一段。
+ * 两者同时在屏上会让人以为「两个都要调」，且实际永远只有一个生效。
+ *
+ * 切换时各自的值不会丢：值都落在 `ReaderSettings` 里，本组只是把当前模式的
+ * 那一条按 `committed` 重新初始化滑杆（见 [AutoSpeedSlider] 的 `remember` key）。
+ */
+@Composable
+private fun AutoReadGroup(
+    autoPageMode: String,
+    scrollPixel: Int,
+    pageSpeed: Int,
+    autoReadAvailable: Boolean,
+    onAutoPageModeChange: (String) -> Unit,
+    onScrollPixelChange: (Int) -> Unit,
+    onPageSpeedChange: (Int) -> Unit,
+) {
+    // 读盘时已被 AutoPageMode.normalize 归一过，这里只需要二分，不必再兜底第三种值
+    val isParagraph = autoPageMode == AutoPageMode.PARAGRAPH
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("自动阅读", style = MaterialTheme.typography.labelLarge)
+            Spacer(Modifier.width(10.dp))
+            FilterChip(
+                selected = !isParagraph,
+                onClick = { onAutoPageModeChange(AutoPageMode.PIXEL) },
+                label = { Text("像素滚动") },
+            )
+            Spacer(Modifier.width(8.dp))
+            FilterChip(
+                selected = isParagraph,
+                onClick = { onAutoPageModeChange(AutoPageMode.PARAGRAPH) },
+                label = { Text("段落滚动") },
+            )
+        }
+
+        if (isParagraph) {
+            AutoSpeedSlider(
+                title = "每段停留",
+                committed = pageSpeed,
+                range = ReaderSettings.MIN_PAGE_SPEED..ReaderSettings.MAX_PAGE_SPEED,
+                step = PAGE_SPEED_STEP,
+                // 100ms 一档 = 48 个中间刻度，`steps=48` 会在轨道上画出一串点、手机屏上
+                // 变成虚线段；这里用连续轨道 + 松手吸附到 100ms，取值与 steps=48 完全一致。
+                discreteSteps = 0,
+                format = { "${it}ms" },
+                onCommit = onPageSpeedChange,
+            )
+        } else {
+            AutoSpeedSlider(
+                title = "每帧像素",
+                committed = scrollPixel,
+                range = ReaderSettings.MIN_SCROLL_PIXEL..ReaderSettings.MAX_SCROLL_PIXEL,
+                step = 1,
+                // 1px 一档 = 8 个中间刻度，点不多，用真实 steps 让拖动直接吸附到整数
+                discreteSteps =
+                    ReaderSettings.MAX_SCROLL_PIXEL - ReaderSettings.MIN_SCROLL_PIXEL - 1,
+                format = { "${it}px" },
+                onCommit = onScrollPixelChange,
+            )
+        }
+
+        Text(
+            text = "自动阅读仅在上下滑动下可用；手指拖动、切章、打开目录或面板会停止。",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (!autoReadAvailable) {
+            Text(
+                text = "当前翻页方式不是上下滑动，自动阅读不会启动；先切回「上下滑动」。",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+    }
+}
+
+/**
+ * 自动阅读的速度滑杆（两种模式共用）。
+ *
+ * 与字号/亮度同一套写盘策略：拖动中只改本地 `dragValue`（标签实时跟着变），
+ * 松手 `onValueChangeFinished` 才落盘 —— 一次拖动只写一次 SharedPreferences。
+ *
+ * `remember(committed)`：外部值变了（重置、别处修改）就按新值重新初始化；
+ * 只在拖动过程中由 `dragValue` 自己说了算，不会因为打字/落盘的回环把滑杆拽回去。
+ */
+@Composable
+private fun AutoSpeedSlider(
+    title: String,
+    /** 已落盘的值。 */
+    committed: Int,
+    range: IntRange,
+    /** 吸附步长：像素模式 1，段落模式 100ms。 */
+    step: Int,
+    /** 传给 M3 Slider 的中间刻度数；0 表示连续轨道（仍按 [step] 吸附）。 */
+    discreteSteps: Int,
+    format: (Int) -> String,
+    onCommit: (Int) -> Unit,
+) {
+    var dragValue by remember(committed) { mutableFloatStateOf(committed.toFloat()) }
+    val shown = snapToStep(dragValue.roundToInt(), range, step)
+    Column {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(title, style = MaterialTheme.typography.labelLarge)
+            Spacer(Modifier.weight(1f))
+            Text(
+                text = format(shown),
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
+        Slider(
+            value = dragValue,
+            onValueChange = { dragValue = it },
+            // 从实时状态里再吸附一次，不依赖上一次组合时的 `shown`
+            onValueChangeFinished = { onCommit(snapToStep(dragValue.roundToInt(), range, step)) },
+            valueRange = range.first.toFloat()..range.last.toFloat(),
+            steps = discreteSteps,
+            modifier = Modifier.fillMaxWidth(),
+        )
+    }
+}
+
+/** 段落滚动速度的档位宽度（ms）。与前端「垂直速度」按 100 步进一致。 */
+private const val PAGE_SPEED_STEP = 100
+
+/** 把滑杆的连续取值吸附到 [step] 的整数倍并夹进区间。 */
+private fun snapToStep(value: Int, range: IntRange, step: Int): Int {
+    if (step <= 1) return value.coerceIn(range.first, range.last)
+    return ((value.toFloat() / step).roundToInt() * step).coerceIn(range.first, range.last)
 }
 
 /** commonMain 没有 String.format（JVM 专属），这里自己保留一位小数。 */

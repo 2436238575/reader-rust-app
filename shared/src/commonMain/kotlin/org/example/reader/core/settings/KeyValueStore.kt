@@ -50,6 +50,16 @@ object SettingsKeys {
     const val READER_BRIGHTNESS = "reader_brightness"
     const val READER_EYE_CARE = "reader_eye_care"
 
+    // 阅读器自动阅读（P1-8）。三个键与前端 `readerConfig` 的 autoPageMode / scrollPixel / pageSpeed 一一对应
+    /** 滚动方式：`pixel`（像素滚动，默认）或 `paragraph`（段落滚动）。 */
+    const val READER_AUTO_PAGE_MODE = "reader_auto_page_mode"
+
+    /** 像素滚动每帧步长（1..10 px）。 */
+    const val READER_SCROLL_PIXEL = "reader_scroll_pixel"
+
+    /** 段落滚动每段停留毫秒（100..5000）。 */
+    const val READER_PAGE_SPEED = "reader_page_speed"
+
     // 应用
     const val APP_THEME = "app_theme"
 }

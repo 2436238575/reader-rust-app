@@ -11,6 +11,8 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -74,10 +76,14 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.vector.addPathNodes
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
@@ -87,12 +93,17 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.example.reader.core.AppDependencies
 import org.example.reader.core.model.Book
 import org.example.reader.core.platform.ApplyWindowBrightness
 import org.example.reader.core.platform.rememberSystemBrightness
+import org.example.reader.core.settings.AutoPageMode
 import org.example.reader.core.settings.ReadMethod
 import org.example.reader.core.settings.ReaderSettings
 import org.example.reader.core.util.AppBackHandler
@@ -148,6 +159,10 @@ fun ReaderScreen(
 
     var controlsVisible by rememberSaveable { mutableStateOf(true) }
     var showCatalog by rememberSaveable { mutableStateOf(false) }
+    // 自动阅读开关**不进 prefs**（前端 `store.isAutoScrolling` 同样不持久化）：
+    // 退出阅读器再进来不该自己开始滚。用 rememberSaveable 只是为了转屏 / 进程回收后
+    // 不丢当前状态，与控件显隐（controlsVisible）同一档位。
+    var autoReading by rememberSaveable { mutableStateOf(false) }
     var activePanel by remember { mutableStateOf<ReaderPanel?>(null) }
     var moreMenuExpanded by remember { mutableStateOf(false) }
 
@@ -199,6 +214,80 @@ fun ReaderScreen(
         snapshotFlow { listState.chapterFraction() }.collect { viewModel.onScrolled(it) }
     }
 
+    // ------------------------------------------------------------------ 自动阅读（P1-8）
+    // 只在竖排可用：横翻/双页是「一屏一页」的切换，没有「匀速滚动」这回事，
+    // 硬做只会变成「每隔 N 秒自动翻页」，和这里承诺的行为不是同一件事。
+    val toggleAutoReading: () -> Unit = {
+        if (horizontalMode) {
+            hint("自动阅读暂只支持上下滑动")
+        } else {
+            autoReading = !autoReading
+        }
+    }
+
+    // 切章打断：自动阅读滚到章末就停，不自动续翻下一章（避免连锁翻章烧流量、
+    // 也避免用户离开后书还在自己往下翻）。手动翻章同理。
+    // 翻页方式切到横翻/双页也一并打断：那时正文不再由 listState 承载，
+    // 留着开关只会「按钮显示暂停、画面不动」。
+    LaunchedEffect(state.currentIndex, horizontalMode) { autoReading = false }
+
+    /**
+     * 自动滚动循环。
+     *
+     * 「停」只有三条路，其它一律不停：
+     * 1. **滚到章末** —— `canScrollForward` 变 false；
+     * 2. **用户拖动** —— `interactionSource` 收到 `DragInteraction.Start`。
+     *    程序化滚动（`scrollBy` / `animateScrollToItem`）不会产生 DragInteraction，
+     *    所以不会把自己的滚动误判成用户操作（`isScrollInProgress` 会，不能用）。
+     * 3. **effect 被取消** —— 切章、离开阅读器、改设置，由 Compose 负责取消。
+     *
+     * 特别注意**不能**把「滚动权被抢占」当成停止：`scrollBy` 走 `MutatePriority.Default`，
+     * 列表重新布局、上一段动画收尾、手势收尾的 fling 都可能短暂抢走它并抛
+     * `CancellationException`。它和「用户打断」抛的是同一个异常，含义却相反，
+     * 当成停止会让自动阅读滚几秒莫名其妙自己关掉。所以每一帧的失败只跳过该帧，
+     * 见 [autoScrollStep]。
+     *
+     * 实测（emulator-5554 竖排 / 默认 1px 每帧）：527 帧推进 478px ≈ 60px/s，匀速无跳帧；
+     * 到章末自动停并清掉开关；手指拖动 140px 立即停且不会自己重开。
+     */
+    LaunchedEffect(autoReading, settings.autoPageMode, settings.scrollPixel, settings.pageSpeed) {
+        if (!autoReading) return@LaunchedEffect
+        launch {
+            listState.interactionSource.interactions.collect { interaction ->
+                if (interaction is DragInteraction.Start) autoReading = false
+            }
+        }
+        // 刚切章时列表还没量出版面，`canScrollForward` 是 false、`totalItemsCount` 是 0，
+        // 直接开滚会「一启动就判定到底、自己关掉」。等到有内容再开始。
+        if (listState.layoutInfo.totalItemsCount == 0) {
+            snapshotFlow { listState.layoutInfo.totalItemsCount }.first { it > 0 }
+        }
+        if (settings.autoPageMode == AutoPageMode.PARAGRAPH) {
+            // 段落滚动：每段停留 pageSpeed 毫秒，然后滚到下一项的开头。
+            // 每段行数不同，用固定停留时间而不是按行数加权 —— 与前端
+            // 「同一段停留 pageSpeed」的默认语义一致，行为可预期。
+            while (true) {
+                delay(settings.pageSpeed.toLong())
+                val next = listState.firstVisibleItemIndex + 1
+                if (next >= listState.layoutInfo.totalItemsCount) break
+                autoScrollStep { listState.animateScrollToItem(next) }
+            }
+        } else {
+            // 像素滚动：步长就是「每帧多少像素」，不乘帧率也不做时间补偿。
+            // withFrameNanos 跟随屏幕刷新率（60/90/120Hz），比 delay(16) 硬编码
+            // 更稳：delay 在低帧率设备上会累积漂移，高刷屏上又会掉帧。
+            val step = settings.scrollPixel.coerceAtLeast(1).toFloat()
+            while (true) {
+                withFrameNanos { }
+                // 这一帧的滚动权被抢走就跳过，下一帧接着滚，不要当成「到底了」
+                if (!autoScrollStep { listState.scrollBy(step) }) continue
+                if (!listState.canScrollForward) break
+            }
+        }
+        // 滚到章末：停下并把「要不要继续」留给用户（不自动跳下一章）
+        autoReading = false
+    }
+
     // 离开阅读器（返回 / 切页）时立刻落库，不等节流窗口
     DisposableEffect(Unit) {
         onDispose { viewModel.flushProgress() }
@@ -237,6 +326,10 @@ fun ReaderScreen(
                     currentIndex = state.currentIndex,
                     onBack = { showCatalog = false },
                     onSelectChapter = { index ->
+                        // 选章本身会触发 currentIndex 变化（上面已打断自动阅读），
+                        // 这里再显式置 false：同章连点两次时 currentIndex 不变，
+                        // 那样就会「进了目录又回来还在自己滚」。
+                        autoReading = false
                         viewModel.goToChapter(index)
                         showCatalog = false
                         controlsVisible = false
@@ -284,16 +377,29 @@ fun ReaderScreen(
                 bookName = state.book?.name ?: "阅读",
                 chapterTitle = state.currentChapter?.title.orEmpty(),
                 onBack = onBack,
-                onOpenCatalog = { showCatalog = true },
-                onRefresh = viewModel::refreshChapter,
+                onOpenCatalog = {
+                    autoReading = false
+                    showCatalog = true
+                },
+                onRefresh = {
+                    // 刷新会换掉正文，滚到一半刷新等于「脚下的地在动」，先停
+                    autoReading = false
+                    viewModel.refreshChapter()
+                },
                 onHint = hint,
                 moreExpanded = moreMenuExpanded,
-                onMoreExpandedChange = { moreMenuExpanded = it },
+                onMoreExpandedChange = { expanded ->
+                    if (expanded) autoReading = false
+                    moreMenuExpanded = expanded
+                },
                 isNight = palette.isDark,
                 onToggleNight = {
                     deps.readerSettings.setTheme(if (palette.isDark) 0 else ReaderPalettes.lastIndex)
                 },
-                onShowDetail = { state.book?.let(onShowDetail) },
+                onShowDetail = {
+                    autoReading = false
+                    state.book?.let(onShowDetail)
+                },
             )
         }
 
@@ -310,11 +416,19 @@ fun ReaderScreen(
                 chapterCount = state.chapters.size,
                 hasPrev = state.hasPrev,
                 hasNext = state.hasNext,
+                autoReading = autoReading,
                 onPrev = viewModel::prevChapter,
                 onNext = viewModel::nextChapter,
                 onSeekChapter = viewModel::goToChapter,
-                onOpenCatalog = { showCatalog = true },
-                onOpenSettings = { activePanel = ReaderPanel.Settings },
+                onToggleAutoReading = toggleAutoReading,
+                onOpenCatalog = {
+                    autoReading = false
+                    showCatalog = true
+                },
+                onOpenSettings = {
+                    autoReading = false
+                    activePanel = ReaderPanel.Settings
+                },
                 onHint = hint,
             )
         }
@@ -357,6 +471,10 @@ fun ReaderScreen(
                             onEyeCareChange = deps.readerSettings::setEyeCare,
                             onLineHeightChange = deps.readerSettings::setLineHeight,
                             onParagraphSpacingChange = deps.readerSettings::setParagraphSpacing,
+                            // 自动阅读（P1-8）：面板只配「怎么滚」，开关仍在底栏
+                            onAutoPageModeChange = deps.readerSettings::setAutoPageMode,
+                            onScrollPixelChange = deps.readerSettings::setScrollPixel,
+                            onPageSpeedChange = deps.readerSettings::setPageSpeed,
                             onReset = deps.readerSettings::reset,
                             onHint = hint,
                         )
@@ -638,9 +756,12 @@ private fun ReaderBottomBar(
     chapterCount: Int,
     hasPrev: Boolean,
     hasNext: Boolean,
+    /** 自动阅读是否正在跑；决定「自动翻页」项的图标/文案/激活态。 */
+    autoReading: Boolean,
     onPrev: () -> Unit,
     onNext: () -> Unit,
     onSeekChapter: (Int) -> Unit,
+    onToggleAutoReading: () -> Unit,
     onOpenCatalog: () -> Unit,
     onOpenSettings: () -> Unit,
     onHint: (String) -> Unit,
@@ -712,21 +833,32 @@ private fun ReaderBottomBar(
                 horizontalArrangement = Arrangement.SpaceEvenly,
             ) {
                 BarAction(Icons.Filled.Search, "搜索", palette) { onHint("书内搜索将在 P2 接入") }
-                BarAction(ReaderIcons.AutoPage, "自动翻页", palette) { onHint("自动翻页将在 P1-8 接入") }
-                BarAction(Icons.AutoMirrored.Filled.List, "目录", palette, onOpenCatalog)
+                BarAction(
+                    icon = if (autoReading) PauseGlyph else ReaderIcons.AutoPage,
+                    label = if (autoReading) "暂停" else "自动翻页",
+                    palette = palette,
+                    active = autoReading,
+                ) { onToggleAutoReading() }
+                BarAction(Icons.AutoMirrored.Filled.List, "目录", palette, onClick = onOpenCatalog)
                 BarAction(ReaderIcons.VolumeUp, "朗读", palette) { onHint("朗读将在 P3 接入") }
-                BarAction(Icons.Filled.Settings, "设置", palette, onOpenSettings)
+                BarAction(Icons.Filled.Settings, "设置", palette, onClick = onOpenSettings)
             }
         }
     }
 }
 
-/** 底栏功能项：图标在上、文字在下，宽度均分。 */
+/**
+ * 底栏功能项：图标在上、文字在下，宽度均分。
+ *
+ * [active] 只影响配色（图标与文字升到正文色 + 一层淡淡的前景底），
+ * 不改变布局，避免「开/关」之间整条底栏跳动。
+ */
 @Composable
 private fun BarAction(
     icon: ImageVector,
     label: String,
     palette: ReaderPalette,
+    active: Boolean = false,
     onClick: () -> Unit,
 ) {
     Column(
@@ -734,23 +866,69 @@ private fun BarAction(
         modifier = Modifier
             .width(64.dp)
             .pointerInput(Unit) { detectTapGestures { onClick() } }
+            .background(
+                color = if (active) palette.text.copy(alpha = 0.10f) else Color.Transparent,
+                shape = RoundedCornerShape(12.dp),
+            )
             .padding(vertical = 6.dp),
     ) {
         Icon(
             imageVector = icon,
             contentDescription = label,
-            tint = palette.icon,
+            tint = if (active) palette.text else palette.icon,
             modifier = Modifier.size(22.dp),
         )
         Spacer(Modifier.height(4.dp))
         Text(
             text = label,
             style = MaterialTheme.typography.labelSmall,
-            color = palette.secondaryText,
+            color = if (active) palette.text else palette.secondaryText,
             maxLines = 1,
         )
     }
 }
+
+/**
+ * 「暂停」图标。
+ *
+ * `material-icons-core` 里没有 Pause（它在 extended 包里，会给 debug 构建多塞几十 MB），
+ * 这里直接用 Material Symbols 的 24dp 路径数据。本该放进 `ReaderIcons`，但本轮改动
+ * 只允许动三个文件、且 `ReaderIcons.kt` 正被别的改动占用 —— 下次动它时把这段搬过去。
+ */
+private val PauseGlyph: ImageVector by lazy {
+    ImageVector.Builder(
+        name = "Pause",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f,
+    ).apply {
+        addPath(
+            pathData = addPathNodes("M6 5h4v14H6V5zm8 0h4v14h-4V5z"),
+            fill = SolidColor(Color.Black),
+        )
+    }.build()
+}
+
+/**
+ * 执行一步程序化滚动，把「滚动权被抢占」与「effect 被取消」区分开。
+ *
+ * `scrollBy` / `animateScrollToItem` 都走 `MutatePriority.Default`，被更高优先级的
+ * 手势或另一个滚动抢占时，`MutatorMutex` 会取消本次滚动并抛 `CancellationException`。
+ * 这两件事看起来是同一个异常，含义完全不同：
+ * - **只被抢走这一帧**：effect 的 Job 仍然 active —— 返回 false，调用方跳过该帧，
+ *   下一帧继续（用户手势那种真打断由 `DragInteraction` 监听负责停下）；
+ * - **effect 自己被取消**：切章/离开阅读器/改设置，Job 已 inactive —— 必须原样抛出，
+ *   否则协程「取消不干净」，`LaunchedEffect` 的收尾与兄弟协程都会被搅乱。
+ */
+private suspend fun autoScrollStep(block: suspend () -> Unit): Boolean =
+    try {
+        block()
+        true
+    } catch (e: CancellationException) {
+        if (!currentCoroutineContext().isActive) throw e
+        false
+    }
 
 /**
  * 章内阅读位置（0..1）。

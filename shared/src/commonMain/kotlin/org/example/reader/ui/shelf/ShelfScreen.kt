@@ -131,7 +131,7 @@ fun ShelfScreen(
     // 从「移动分组 → 新建分组」进入时，建完直接移动选中的书
     var moveAfterCreate by remember { mutableStateOf(false) }
 
-    val pickBookFile = rememberBookFilePicker { file -> viewModel.importBook(file) }
+    val pickBookFile = rememberBookFilePicker(viewModel::onPickResult)
 
     LaunchedEffect(viewModel) {
         viewModel.messages.collect { snackbarHostState.showSnackbar(it) }
@@ -614,6 +614,11 @@ private fun SortBar(isSaving: Boolean) {
  *
  * 拖动时按整行高度换算「移动几步」，实时在本地列表里换位；
  * 松手后由顶栏「保存」整架提交。行高从实际布局里量，字体放大也适用。
+ *
+ * 命中区 48dp（M3 最小触控尺寸），视觉仍是 24dp 的三条细线——
+ * 手势检测挂在外层 48dp 节点上，视觉内缩到 24dp 的 Canvas 里，
+ * 这样既满足点击区又不会在行尾杵一个大图标。拖拽换算用的是**行高**，
+ * 与命中区尺寸无关，手感不变。
  */
 @Composable
 private fun DragHandle(
@@ -623,10 +628,9 @@ private fun DragHandle(
 ) {
     var accumulated by remember(bookId) { mutableFloatStateOf(0f) }
     val handleColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
-    Canvas(
+    Box(
         modifier = Modifier
-            // 触摸区保持 44dp，但视觉只有三条细线，避免杵一个大汉堡图标在行尾
-            .size(44.dp)
+            .size(48.dp)
             .pointerInput(bookId, rowHeightPx) {
                 if (rowHeightPx <= 0) return@pointerInput
                 detectDragGestures(
@@ -645,20 +649,23 @@ private fun DragHandle(
                     }
                 }
             },
+        contentAlignment = Alignment.Center,
     ) {
-        val lineWidth = 12.dp.toPx()
-        val lineHeight = 1.5.dp.toPx()
-        val gap = 3.5.dp.toPx()
-        val totalHeight = lineHeight * 3 + gap * 2
-        var y = (size.height - totalHeight) / 2
-        repeat(3) {
-            drawRoundRect(
-                color = handleColor,
-                topLeft = Offset((size.width - lineWidth) / 2, y),
-                size = Size(lineWidth, lineHeight),
-                cornerRadius = CornerRadius(lineHeight / 2),
-            )
-            y += lineHeight + gap
+        Canvas(modifier = Modifier.size(24.dp)) {
+            val lineWidth = 12.dp.toPx()
+            val lineHeight = 1.5.dp.toPx()
+            val gap = 3.5.dp.toPx()
+            val totalHeight = lineHeight * 3 + gap * 2
+            var y = (size.height - totalHeight) / 2
+            repeat(3) {
+                drawRoundRect(
+                    color = handleColor,
+                    topLeft = Offset((size.width - lineWidth) / 2, y),
+                    size = Size(lineWidth, lineHeight),
+                    cornerRadius = CornerRadius(lineHeight / 2),
+                )
+                y += lineHeight + gap
+            }
         }
     }
 }

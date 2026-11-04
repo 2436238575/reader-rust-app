@@ -28,8 +28,11 @@ data class ReaderUiState(
     /** 正文来自用户编辑版（而非上游）；界面上给个轻标记。 */
     val isEdited: Boolean = false,
     /**
-     * 待恢复的章内位置（0..1）。章节内容落定后由界面消费一次：
-     * 读到一半退出，重进回到原处而不是章首。
+     * 一次性 UI 滚动指令（0..1），**不是位置源**。
+     *
+     * 位置真源只有 VM 内的 `lastFraction`；这里只在「换到另一章且要落到非章首」时下发，
+     * 界面滚完调 [ReaderViewModel.consumePendingScroll] 消费掉。
+     * 它不能当位置读：残留值会在重进阅读器时把位置拽回旧章旧处，甚至把进度冲成 0。
      */
     val pendingScrollFraction: Float? = null,
     /**
@@ -51,8 +54,12 @@ data class ReaderUiState(
  * 章节身份是 `chapterUrl`（换源会变），书籍身份是 `bookId`（换源不变）。
  * 进度对齐 Web 端：服务端 `durChapterPos` 用 0–10000 的万分比。
  *
- * 正文有两层加速：内存 LRU（默认 8 章）+ 进章后预取相邻章，
+ * 正文有两层加速：内存 LRU（访问序，默认 8 章，当前章不被挤出）+ 进章后预取相邻章，
  * 连续翻章基本不用等网络。
+ *
+ * 位置只有两个来源，别再加第三个：
+ * 1. 服务端进度（`open()` 续读，换算成 0..1 后作为**参数**传给 `loadContent`）；
+ * 2. 内存里的 `lastFraction`（与 `currentIndex` 同批更新，见 [loadContent]）。
  */
 class ReaderViewModel(
     private val deps: AppDependencies,
@@ -70,8 +77,23 @@ class ReaderViewModel(
     private val _state = MutableStateFlow(ReaderUiState())
     val state: StateFlow<ReaderUiState> = _state.asStateFlow()
 
-    /** 正文缓存：key 是目录下标。换源/刷新时整条清掉，避免串内容。 */
-    private val contentCache = LinkedHashMap<Int, ChapterContent>()
+    /**
+     * 正文请求代际。每发起一次换章/刷新自增，网络返回后必须比对，落后者整条作废。
+     *
+     * 为什么用代际而不是 `Job.cancel()`：`awaitBuffered` 的取消检查发生在 resume 之前，
+     * 而「响应字节已经读完、协程却还没被调度执行」之间存在窗口，取消在那个窗口里拦不住；
+     * 况且预取（`/getBookContents`）与单章请求共用同一个 `viewModelScope`，
+     * 按 Job 取消要么漏、要么误伤。代际校验是唯一能覆盖全部窗口、且与现象一一对应的判据。
+     */
+    private var generation = 0
+
+    /**
+     * 正文缓存：key 是目录下标。换源/刷新时整条清掉，避免串内容。
+     *
+     * `accessOrder = true`（访问序）：`get` 与 `put` 都会把键挪到队尾，
+     * 「最近使用」由访问顺序自动维护，不再依赖写入顺序（旧实现是 FIFO，见 R-11）。
+     */
+    private val contentCache = LinkedHashMap<Int, ChapterContent>(16, 0.75f, true)
 
     /** 正在预取的目录下标，避免同一章重复请求。 */
     private val prefetching = mutableSetOf<Int>()
@@ -84,9 +106,6 @@ class ReaderViewModel(
 
     /** 节流窗口内挂起的补存任务；只在窗口到期后补一次，保证位置最终一定落库。 */
     private var pendingSaveJob: Job? = null
-
-    /** 打开已读过的章节时，记住要恢复到的位置。 */
-    private var pendingRestoreFraction: Float? = null
 
     init {
         open()
@@ -117,16 +136,18 @@ class ReaderViewModel(
                     pendingIndex = null
                     val startIndex = (requested ?: book.durChapterIndex)
                         .coerceIn(0, chapters.lastIndex)
-                    // 只有「续读上次那章」才恢复章内位置；从目录指定章节一律从章首开始
-                    pendingRestoreFraction = if (startIndex == book.durChapterIndex && book.durChapterPos > 0) {
-                        book.durChapterPos / 10000f
-                    } else {
-                        null
-                    }
+                    // 只有「续读上次那章」才恢复章内位置；从目录指定章节一律从章首开始。
+                    // 位置以参数形式传下去：它属于「这一次加载」，放进字段就会被迟到的旧章结果吃掉。
+                    val restoreFraction =
+                        if (startIndex == book.durChapterIndex && book.durChapterPos > 0) {
+                            book.durChapterPos / 10000f
+                        } else {
+                            0f
+                        }
                     _state.update {
                         it.copy(isLoading = false, book = book, chapters = chapters, currentIndex = startIndex)
                     }
-                    loadContent(startIndex)
+                    loadContent(startIndex, restoreFraction = restoreFraction)
                 }
 
                 is ApiResult.Failure -> {
@@ -139,21 +160,42 @@ class ReaderViewModel(
     /**
      * 加载章节正文。
      *
-     * 命中缓存直接出文字并顺手预取相邻章；未命中才走网络。
+     * [restoreFraction] 是本次加载要落到的章内位置（0..1），**必须是参数**：
+     * 放在字段里的后果是迟到的旧章结果会把待恢复位置「取出即清空」地吃掉，
+     * 用户真正要去的章反而落在章首（R-02 的第四笔受损面）。
+     *
+     * 命中缓存直接出文字并顺手预取相邻章；[force] 为 `true`（刷新本章）时绕过缓存，
+     * 但**不删缓存**——刷新失败时旧正文与旧缓存都要留着兜底（R-05）。
      */
-    private fun loadContent(index: Int, force: Boolean = false) {
+    private fun loadContent(index: Int, restoreFraction: Float = 0f, force: Boolean = false) {
         val chapter = _state.value.chapters.getOrNull(index) ?: return
-        _state.update { it.copy(isLoadingContent = true, currentIndex = index, error = null) }
+        // 代际自增：从这一刻起本次调用是唯一有效的正文请求，之前发出去的全部作废
+        val gen = ++generation
+        val restore = restoreFraction.coerceIn(0f, 1f)
+        // 章号与位置必须同批更新（本段到 _state.update 之间不得有挂起点）：
+        // 挂起的补存写的是「currentIndex × lastFraction」，只改章号就会把脏组合落库
+        val previousFraction = lastFraction
+        pendingSaveJob?.cancel()
+        pendingSaveJob = null
+        lastFraction = restore
+        _state.update {
+            it.copy(
+                isLoadingContent = true,
+                currentIndex = index,
+                error = null,
+                // 上一次加载下发的一次性滚动指令已过期，清掉避免残留位置被重放
+                pendingScrollFraction = null,
+            )
+        }
 
         if (!force) {
             val cached = contentCache[index]
             if (cached != null) {
-                applyContent(index, chapter, cached)
+                // 访问序 Map：上面这次 get 已把该章挪到队尾，命中即刷新 LRU 顺序
+                applyContent(index, chapter, cached, restore)
                 prefetchNeighbors(index)
                 return
             }
-        } else {
-            contentCache.remove(index)
         }
 
         viewModelScope.launch {
@@ -162,31 +204,80 @@ class ReaderViewModel(
                 chapterUrl = chapter.url,
                 index = chapter.index,
             )
+            // 代际校验必须落在协程内、写任何状态之前：
+            // 期间用户又换了章的话，这条迟到的结果整条丢弃，否则会出现「新章标题 + 旧章正文」
+            if (gen != generation || index != _state.value.currentIndex) return@launch
             when (result) {
                 is ApiResult.Success -> {
                     remember(index, result.value)
-                    applyContent(index, chapter, result.value)
+                    applyContent(index, chapter, result.value, restore)
                     prefetchNeighbors(index)
                 }
 
-                is ApiResult.Failure -> {
-                    _state.update { it.copy(isLoadingContent = false, error = result.message) }
-                }
+                is ApiResult.Failure -> onContentFailure(
+                    message = result.message,
+                    fallbackFraction = previousFraction,
+                    isRefresh = force,
+                )
             }
         }
     }
 
-    private fun applyContent(index: Int, chapter: BookChapter, content: ChapterContent) {
+    /**
+     * 正文加载失败。
+     *
+     * 不允许先丢旧正文：只要 [ReaderUiState.contentIndex] 有效，就把 `currentIndex` 回滚到
+     * 正文实际所属的那一章，同时把 `lastFraction` 退回离场位置——「章号 × 位置」必须始终成对，
+     * 否则退出时的 `flushProgress()` 会把旧章位置写进新章。只有首次加载（还没有正文）才是真空态。
+     */
+    private fun onContentFailure(message: String, fallbackFraction: Float, isRefresh: Boolean) {
+        // 刷新失败的提示要能与普通加载错误区分（验收要求文案含「刷新」字样）
+        val text = if (isRefresh) "刷新失败：$message" else message
+        val rollbackTo = _state.value.contentIndex
+        if (rollbackTo >= 0) {
+            pendingSaveJob?.cancel()
+            pendingSaveJob = null
+            lastFraction = fallbackFraction.coerceIn(0f, 1f)
+            _state.update {
+                it.copy(isLoadingContent = false, error = text, currentIndex = rollbackTo)
+            }
+        } else {
+            _state.update { it.copy(isLoadingContent = false, error = text) }
+        }
+    }
+
+    /**
+     * 应用正文。
+     *
+     * 第一句就是归属校验（防御性）：正文只能落到它自己所属的那一章。它与代际校验是两道闸，
+     * 互不替代——代际挡的是「旧的网络结果」，这一句挡的是所有「内容归属与当前章不一致」的路径。
+     *
+     * 位置走参数（[restoreFraction]），本方法**不改** `lastFraction`：位置与章号已经在
+     * [loadContent] 里同批更新过，这里再写一次就会与 `onScrolled` 的延迟补存抢时序。
+     */
+    private fun applyContent(
+        index: Int,
+        chapter: BookChapter,
+        content: ChapterContent,
+        restoreFraction: Float,
+    ) {
+        if (index != _state.value.currentIndex) return
         val paragraphs = splitParagraphs(content.content)
-        val restore = pendingRestoreFraction
-        pendingRestoreFraction = null
-        lastFraction = restore ?: 0f
+        val restore = restoreFraction.coerceIn(0f, 1f)
+        val previousContentIndex = _state.value.contentIndex
+        // pendingScrollFraction 只是一次性 UI 滚动指令，不是位置源（真源是 lastFraction）。
+        // 只在「换到另一章且要落到非章首」时下发：
+        //  · 章首不下发 —— 界面本来就会回顶，残留的 0f 会让重进阅读器时把进度冲成 0；
+        //  · 同章（刷新）不下发 —— 界面按 currentFraction() 兜底即可，否则指令一旦没被消费，
+        //    下次重进阅读器会按它把位置拽回旧值。
+        val scrollCommand: Float? =
+            if (restore > 0f && index != previousContentIndex) restore else null
         _state.update {
             it.copy(
                 isLoadingContent = false,
                 paragraphs = paragraphs,
                 isEdited = content.edited,
-                pendingScrollFraction = restore,
+                pendingScrollFraction = scrollCommand,
                 contentIndex = index,
             )
         }
@@ -195,14 +286,14 @@ class ReaderViewModel(
             durChapterIndex = index,
             durChapterTitle = chapter.title,
             durChapterTime = nowMillis(),
-            durChapterPos = (lastFraction * 10000).roundToInt(),
+            durChapterPos = (restore * 10000).roundToInt(),
         )
         if (book != null) {
             _state.update { it.copy(book = book) }
             deps.recentBooks.record(book)
         }
         lastSavedAt = nowMillis()
-        persistProgress(index, lastFraction)
+        persistProgress(index, restore)
     }
 
     // ─── 预加载 ────────────────────────────────────────────────────────────────
@@ -237,13 +328,29 @@ class ReaderViewModel(
         }
     }
 
-    /** 写缓存并按 LRU 上限裁剪（LinkedHashMap 的插入顺序即使用顺序）。 */
+    /**
+     * 写缓存。
+     *
+     * `contentCache` 是访问序 `LinkedHashMap`：`put` 与 `get` 都会把键挪到队尾，
+     * 所以「写序 = 读序」，命中缓存即刷新顺序。守卫不要加在这里——
+     * 预取与单章加载共用本缓存，加错位置会让预取静默失效。
+     */
     private fun remember(index: Int, content: ChapterContent) {
-        contentCache.remove(index)
         contentCache[index] = content
+        trimCache()
+    }
+
+    /**
+     * 按访问序裁剪，并**钉住当前章**。
+     *
+     * 正在读的章一旦被挤出，重进阅读器就会时而命中、时而落空，
+     * 表现为「重进有时恢复到 85%、有时回到章首」（R-11）。没有可淘汰的键就停手。
+     */
+    private fun trimCache() {
         while (contentCache.size > CONTENT_CACHE_SIZE) {
-            val eldest = contentCache.keys.firstOrNull() ?: break
-            contentCache.remove(eldest)
+            val current = _state.value.currentIndex
+            val victim = contentCache.keys.firstOrNull { it != current } ?: break
+            contentCache.remove(victim)
         }
     }
 
@@ -296,12 +403,20 @@ class ReaderViewModel(
 
     // ─── 章节切换 ──────────────────────────────────────────────────────────────
 
-    fun goToChapter(index: Int) {
+    /**
+     * 切章。
+     *
+     * [restoreFraction] 指定落点：`0f` 章首，`1f` 章末。
+     * **`1f` 只有 [prevChapter] 用**：「上一章」的语义是回到上一章的结尾继续读，
+     * 给它下发 `0f` 会让人从章首重读；其它入口（下一章 / 目录跳转 / 详情指定）一律 `0f`。
+     */
+    fun goToChapter(index: Int, restoreFraction: Float = 0f) {
         val state = _state.value
         if (index !in state.chapters.indices || index == state.currentIndex) return
-        // 先保存离开那一章的位置，再切
+        // 先落「离场章 × 离场位置」，再切。顺序不能反：flushProgress 读的是当前章与当前位置，
+        // 挪到 loadContent 之后就会把新章的位置写进旧章。
         flushProgress()
-        loadContent(index)
+        loadContent(index, restoreFraction = restoreFraction)
     }
 
     /**
@@ -322,16 +437,26 @@ class ReaderViewModel(
             pendingIndex = index
             return
         }
-        goToChapter(index)
+        // 目录/详情指定章节从章首开始
+        goToChapter(index, restoreFraction = 0f)
     }
 
-    fun nextChapter() = goToChapter(_state.value.currentIndex + 1)
+    fun nextChapter() = goToChapter(_state.value.currentIndex + 1, restoreFraction = 0f)
 
-    fun prevChapter() = goToChapter(_state.value.currentIndex - 1)
+    fun prevChapter() = goToChapter(_state.value.currentIndex - 1, restoreFraction = 1f)
 
-    /** 重新拉当前章（忽略缓存），用于「刷新本章」。 */
+    /**
+     * 重新拉当前章（忽略缓存），用于「刷新本章」。
+     *
+     * 位置按当前实际位置回灌成参数：旧实现让 `applyContent` 把 `lastFraction` 归零并立即写盘，
+     * 85% 处点一下就被写回章首（R-05）。刷新失败时正文与位置都保持原样，只出错误提示。
+     */
     fun refreshChapter() {
-        loadContent(_state.value.currentIndex, force = true)
+        loadContent(
+            index = _state.value.currentIndex,
+            restoreFraction = currentFraction(),
+            force = true,
+        )
     }
 
     /** 上报进度。接口对未入库书返回 400，静默忽略即可（与 Web 端一致）。 */

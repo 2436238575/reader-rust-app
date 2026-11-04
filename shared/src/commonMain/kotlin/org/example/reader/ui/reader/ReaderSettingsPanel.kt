@@ -50,6 +50,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import org.example.reader.core.settings.AutoPageMode
+import org.example.reader.core.settings.ClickAction
 import org.example.reader.core.settings.ReadMethod
 import org.example.reader.core.settings.ReaderSettings
 import kotlin.math.roundToInt
@@ -101,6 +102,7 @@ fun ReaderSettingsPanel(
      * `::setScrollPixel` / `::setPageSpeed`。**故意不给默认值**：这三个是功能必需的回调，
      * 留默认值会让「调用点漏传 → chip 能点但设置不生效」静默通过编译。
      */
+    onClickActionChange: (String) -> Unit,
     onAutoPageModeChange: (String) -> Unit,
     onScrollPixelChange: (Int) -> Unit,
     onPageSpeedChange: (Int) -> Unit,
@@ -160,6 +162,11 @@ fun ReaderSettingsPanel(
                     onHint("「${method.label}」将在后续接入，当前按上下滑动呈现")
                 }
             },
+        )
+
+        ClickActionRow(
+            clickAction = settings.clickAction,
+            onSelect = onClickActionChange,
         )
 
         MiscRow(
@@ -398,6 +405,37 @@ private fun PageMethodRow(method: ReadMethod, onSelect: (ReadMethod) -> Unit) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
+    }
+}
+
+/** 点按行为三档：只影响上下/左右格，中间格（切控件）始终可用。 */
+@Composable
+private fun ClickActionRow(clickAction: String, onSelect: (String) -> Unit) {
+    val options = listOf(
+        ClickAction.AUTO to "自动（到底切章）",
+        ClickAction.NEXT to "仅翻页",
+        ClickAction.NONE to "忽略",
+    )
+    Column {
+        Text("点按行为", style = MaterialTheme.typography.labelLarge)
+        Spacer(Modifier.height(6.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            options.forEach { (value, label) ->
+                FilterChip(
+                    selected = clickAction == value,
+                    onClick = { onSelect(value) },
+                    label = {
+                        Text(label, style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                    },
+                )
+            }
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text = "四边 4% 留白不触发；忽略档仍可点中间切出控件。",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 

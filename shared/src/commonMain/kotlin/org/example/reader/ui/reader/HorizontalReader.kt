@@ -22,7 +22,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -38,6 +40,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
+import org.example.reader.core.settings.ClickAction
 import org.example.reader.core.settings.ReaderSettings
 import kotlin.math.roundToInt
 
@@ -166,6 +169,7 @@ fun HorizontalReader(
                     pagerState = pagerState,
                     pages = pages,
                     state = state,
+                    clickAction = settings.clickAction,
                     palette = palette,
                     titleStyle = titleStyle,
                     bodyStyle = bodyStyle,
@@ -189,6 +193,7 @@ private fun PagedContent(
     pagerState: PagerState,
     pages: List<ReaderPage>,
     state: ReaderUiState,
+    clickAction: String,
     palette: ReaderPalette,
     titleStyle: TextStyle,
     bodyStyle: TextStyle,
@@ -203,6 +208,8 @@ private fun PagedContent(
     onRestoreConsumed: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
+    // 与竖排一致：档位改动要立刻生效，不靠重进阅读器。
+    val currentClickAction by rememberUpdatedState(clickAction)
 
     // 进入本页时定位一次：比例 → 段落 → 它所在的页
     LaunchedEffect(Unit) {
@@ -237,21 +244,28 @@ private fun PagedContent(
                 .padding(horizontal = horizontal, vertical = vertical)
                 .pointerInput(pageIndex, pages.size, state.currentIndex) {
                     detectTapGestures { offset ->
-                        val third = size.width / 3f
-                        when {
-                            offset.x < third -> if (pageIndex == 0) {
-                                onPrevChapter()
-                            } else {
-                                scope.launch { pagerState.animateScrollToPage(pageIndex - 1) }
+                        // 与竖排同一套九宫格（左列上一页 / 右列下一页 / 中间列切控件），
+                        // 四边 4% 留白不触发；不要回到「单行三等分」的旧口径。
+                        when (horizontalTapZone(offset, size)) {
+                            ReaderTapZone.Menu -> onToggleControls()
+
+                            ReaderTapZone.Prev -> if (currentClickAction != ClickAction.NONE) {
+                                if (pageIndex == 0) {
+                                    if (currentClickAction == ClickAction.AUTO) onPrevChapter()
+                                } else {
+                                    scope.launch { pagerState.animateScrollToPage(pageIndex - 1) }
+                                }
                             }
 
-                            offset.x > size.width - third -> if (pageIndex == pages.lastIndex) {
-                                onNextChapter()
-                            } else {
-                                scope.launch { pagerState.animateScrollToPage(pageIndex + 1) }
+                            ReaderTapZone.Next -> if (currentClickAction != ClickAction.NONE) {
+                                if (pageIndex == pages.lastIndex) {
+                                    if (currentClickAction == ClickAction.AUTO) onNextChapter()
+                                } else {
+                                    scope.launch { pagerState.animateScrollToPage(pageIndex + 1) }
+                                }
                             }
 
-                            else -> onToggleControls()
+                            ReaderTapZone.Ignore -> Unit
                         }
                     }
                 },

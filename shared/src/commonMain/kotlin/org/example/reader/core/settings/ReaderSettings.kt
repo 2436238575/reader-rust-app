@@ -44,6 +44,29 @@ object AutoPageMode {
 }
 
 /**
+ * 点按正文的行为。取值与前端 `readerConfig.clickAction` 一致。
+ *
+ * 三档只影响「上一屏/下一页」，中间格（切控件）永远可用——
+ * `none` 档若连菜单也关掉，用户就呼不出控件了。
+ */
+object ClickAction {
+    /** 到底/到顶时自动切章。 */
+    const val AUTO = "auto"
+
+    /** 只滚动/翻页，不切章。 */
+    const val NEXT = "next"
+
+    /** 忽略左右与上下格，只剩中间格切控件。 */
+    const val NONE = "none"
+
+    /** 未知值（旧版本、手改 prefs）一律回落 auto，避免三档都不选中。 */
+    fun normalize(value: String?): String = when (value) {
+        AUTO, NEXT, NONE -> value
+        else -> AUTO
+    }
+}
+
+/**
  * 阅读器排版设置。
  *
  * 默认值取自前端 `stores/readerConfig.ts`（字号 18 / 行高 1.8 / 段距 0.2 / 首屏上下滑动 /
@@ -64,6 +87,8 @@ data class ReaderSettings(
     val scrollPixel: Int = DEFAULT_SCROLL_PIXEL,
     /** 段落滚动时每段停留的毫秒数 100..5000。 */
     val pageSpeed: Int = DEFAULT_PAGE_SPEED,
+    /** 点按正文的行为，取值见 [ClickAction]。 */
+    val clickAction: String = ClickAction.AUTO,
 ) {
     companion object {
         const val DEFAULT_FONT_SIZE = 18
@@ -164,6 +189,8 @@ class ReaderSettingsStore(private val store: KeyValueStore) {
 
     fun setEyeCare(enabled: Boolean) = update { it.copy(eyeCare = enabled) }
 
+    fun setClickAction(value: String) = update { it.copy(clickAction = ClickAction.normalize(value)) }
+
     /**
      * 切换自动阅读的滚动方式（像素 / 段落）。
      *
@@ -187,6 +214,7 @@ class ReaderSettingsStore(private val store: KeyValueStore) {
     fun setPageSpeed(value: Int) = update {
         it.copy(
             pageSpeed = value.coerceIn(ReaderSettings.MIN_PAGE_SPEED, ReaderSettings.MAX_PAGE_SPEED),
+            clickAction = ClickAction.normalize(store.getString(SettingsKeys.READER_CLICK_ACTION)),
         )
     }
 
@@ -228,6 +256,7 @@ class ReaderSettingsStore(private val store: KeyValueStore) {
         store.putString(SettingsKeys.READER_AUTO_PAGE_MODE, next.autoPageMode)
         store.putInt(SettingsKeys.READER_SCROLL_PIXEL, next.scrollPixel)
         store.putInt(SettingsKeys.READER_PAGE_SPEED, next.pageSpeed)
+        store.putString(SettingsKeys.READER_CLICK_ACTION, next.clickAction)
     }
 
     /**

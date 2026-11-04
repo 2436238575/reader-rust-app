@@ -59,6 +59,7 @@ object SettingsKeys {
 
     /** 段落滚动每段停留毫秒（100..5000）。 */
     const val READER_PAGE_SPEED = "reader_page_speed"
+    const val READER_CLICK_ACTION = "reader_click_action"
 
     // 应用
     const val APP_THEME = "app_theme"

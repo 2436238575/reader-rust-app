@@ -10,6 +10,7 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.interaction.DragInteraction
@@ -72,6 +73,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -104,6 +106,7 @@ import org.example.reader.core.model.Book
 import org.example.reader.core.platform.ApplyWindowBrightness
 import org.example.reader.core.platform.rememberSystemBrightness
 import org.example.reader.core.settings.AutoPageMode
+import org.example.reader.core.settings.ClickAction
 import org.example.reader.core.settings.ReadMethod
 import org.example.reader.core.settings.ReaderSettings
 import org.example.reader.core.util.AppBackHandler
@@ -171,6 +174,9 @@ fun ReaderScreen(
 
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
+    // 手势回调要读**最新**的点击档位：设置面板改完不重进阅读器也应立即生效。
+    // 把值放进 pointerInput 的 key 也能重建，但会连带取消进行中的手势；用 updated state 更稳。
+    val currentClickAction by rememberUpdatedState(settings.clickAction)
     val hint: (String) -> Unit = { message ->
         scope.launch { snackbarHostState.showSnackbar(message) }
     }
@@ -359,8 +365,47 @@ fun ReaderScreen(
                     onNext = viewModel::nextChapter,
                     modifier = Modifier
                         .fillMaxSize()
-                        .pointerInput(Unit) {
-                            detectTapGestures { controlsVisible = !controlsVisible }
+                        .pointerInput(autoReading) {
+                            // 九宫格：上排上一屏、下排下一屏、中间一排切控件；
+                            // 四边 4% 是防误触留白（相对屏宽/屏高，不是厘米）。
+                            detectTapGestures { offset ->
+                                // 自动阅读中点按 = 暂停（不翻屏、不切控件）；再点一次恢复
+                                if (autoReading) {
+                                    autoReading = false
+                                    return@detectTapGestures
+                                }
+                                when (verticalTapZone(offset, size)) {
+                                    // 读最新档位
+                                    ReaderTapZone.Menu -> controlsVisible = !controlsVisible
+
+                                    ReaderTapZone.Prev -> if (currentClickAction != ClickAction.NONE) {
+                                        scope.launch {
+                                            val viewport =
+                                                listState.layoutInfo.viewportSize.height.toFloat()
+                                            if (listState.canScrollBackward) {
+                                                listState.animateScrollBy(-viewport * 0.8f)
+                                            } else if (currentClickAction == ClickAction.AUTO) {
+                                                // 到顶且 auto 才切章；落点由 VM 统一给 1f（章末）
+                                                viewModel.prevChapter()
+                                            }
+                                        }
+                                    }
+
+                                    ReaderTapZone.Next -> if (currentClickAction != ClickAction.NONE) {
+                                        scope.launch {
+                                            val viewport =
+                                                listState.layoutInfo.viewportSize.height.toFloat()
+                                            if (listState.canScrollForward) {
+                                                listState.animateScrollBy(viewport * 0.8f)
+                                            } else if (currentClickAction == ClickAction.AUTO) {
+                                                viewModel.nextChapter()
+                                            }
+                                        }
+                                    }
+
+                                    ReaderTapZone.Ignore -> Unit
+                                }
+                            }
                         },
                 )
             }
@@ -472,6 +517,7 @@ fun ReaderScreen(
                             onLineHeightChange = deps.readerSettings::setLineHeight,
                             onParagraphSpacingChange = deps.readerSettings::setParagraphSpacing,
                             // 自动阅读（P1-8）：面板只配「怎么滚」，开关仍在底栏
+                            onClickActionChange = deps.readerSettings::setClickAction,
                             onAutoPageModeChange = deps.readerSettings::setAutoPageMode,
                             onScrollPixelChange = deps.readerSettings::setScrollPixel,
                             onPageSpeedChange = deps.readerSettings::setPageSpeed,

@@ -42,6 +42,11 @@ object SettingsKeys {
     const val READER_PAGE_WIDTH = "reader_page_width"
     const val READER_SHOW_CHAPTER_IMAGES = "reader_show_chapter_images"
     const val READER_PRELOAD = "reader_preload"
+    /**
+     * 已废弃：亮度不再落盘（每次进阅读器取系统亮度）。
+     * 旧版本写入的 `reader_brightness` 留在 prefs 里不会被读取，删除键反而会多一次写操作。
+     */
+    @Deprecated("亮度不记忆，见 ReaderSettings.setBrightness")
     const val READER_BRIGHTNESS = "reader_brightness"
     const val READER_EYE_CARE = "reader_eye_care"
 

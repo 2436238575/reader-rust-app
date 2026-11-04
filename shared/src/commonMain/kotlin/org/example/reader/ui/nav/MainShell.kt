@@ -67,6 +67,17 @@ private sealed interface Overlay {
 }
 
 /**
+ * 覆盖层的「一帧」。
+ *
+ * 只把栈顶 [overlay] 交给 `AnimatedContent` 是不够的：出栈（Reader → Detail → 主界面）
+ * 时栈顶依然非 null，仅凭「有没有覆盖层」判方向会让出栈也播入栈动画。
+ * 因此把栈深一起作为 target state，方向由两侧 [depth] 的比较得出。
+ *
+ * [depth] 取 `overlays.size`（0 表示回到主 tab）。
+ */
+private data class Frame(val overlay: Overlay?, val depth: Int)
+
+/**
  * 主框架。
  *
  * 底部导航 + 覆盖层栈。所有层级切换都走 [AnimatedContent]，
@@ -105,22 +116,27 @@ fun MainShell(deps: AppDependencies, modifier: Modifier = Modifier) {
     AppBackHandler(enabled = overlays.isNotEmpty(), onBack = ::popOverlay)
 
     AnimatedContent(
-        targetState = overlays.lastOrNull(),
+        // 栈深进 target state：入栈/出栈/同深度替换三种情形才可分得清
+        targetState = Frame(overlay = overlays.lastOrNull(), depth = overlays.size),
         modifier = modifier.fillMaxSize(),
         label = "screen",
         transitionSpec = {
-            if (targetState != null) {
+            if (targetState.depth > initialState.depth) {
                 // 入栈：右侧滑入 + 淡入
                 (slideInHorizontally(tween(260)) { it / 4 } + fadeIn(tween(200))) togetherWith
                     fadeOut(tween(120))
-            } else {
-                // 出栈：向右滑出 + 淡出
+            } else if (targetState.depth < initialState.depth) {
+                // 出栈：向右滑出 + 淡出（Reader → Detail 也是这条，不再误播入栈动画）
                 fadeIn(tween(200)) togetherWith
                     (slideOutHorizontally(tween(260)) { it / 4 } + fadeOut(tween(160)))
+            } else {
+                // 同深度替换（目录选章 = popOverlay + openReader 同批生效）：
+                // 既不是入栈也不是出栈，用淡入淡出，避免页面朝错误方向滑动
+                fadeIn(tween(180)) togetherWith fadeOut(tween(120))
             }
         },
-    ) { screen ->
-        when (screen) {
+    ) { frame ->
+        when (val screen = frame.overlay) {
             null -> MainTabs(
                 deps = deps,
                 selectedTab = selectedTab,

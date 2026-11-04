@@ -41,6 +41,33 @@ data class SaveBooksRequest(
 )
 
 /**
+ * 书架排序（`/saveBookOrder`）：只提交 bookId 顺序，服务端**只写 position 一列**。
+ *
+ * 与 [SaveBooksRequest] 的区别是它不做 DELETE + 重插，所以请求里没带的列
+ * （`infoHtml` / `tocHtml` / `canReName` / `downloadUrls` 等）不会丢。
+ * 后端要求 `bookIds` 是**当前书架的完整集合**：数量不符或集合不等时返回
+ * 400「书架已变化，请刷新后重试」。
+ */
+@Serializable
+data class SaveBookOrderRequest(
+    @SerialName("bookIds") val bookIds: List<String>,
+)
+
+/**
+ * 分组排序的单条（`/saveBookGroupOrder` 的 body 是**裸数组**）。
+ *
+ * 后端只按 `orderNo` 重排：未提交的分组保持原顺序、不会被删除，
+ * 也不校验/改写 `groupName`（增删改的唯一入口是 `/saveBookGroup` 与
+ * `/deleteBookGroup`）。
+ */
+@Serializable
+data class BookGroupOrderItem(
+    @SerialName("groupId") val groupId: Long,
+    /** 目标下标，从 0 起连续递增。 */
+    @SerialName("orderNo") val orderNo: Int,
+)
+
+/**
  * 进度上报。字段名对齐后端 `SaveBookProgressRequest`：
  * `index`（章序号，必填）与 `position`（万分比章内进度 0–10000）。
  * 传 `chapterIndex`/`chapterPos` 会被后端当成缺参，返回 400 `index required`。

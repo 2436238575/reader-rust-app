@@ -12,6 +12,8 @@ import kotlinx.coroutines.launch
 import org.example.reader.core.AppDependencies
 import org.example.reader.core.model.Book
 import org.example.reader.core.model.BookGroup
+import org.example.reader.core.net.BookGroupOrderItem
+import org.example.reader.core.platform.PickResult
 import org.example.reader.core.platform.PickedBookFile
 import org.example.reader.core.net.ApiResult
 
@@ -179,8 +181,16 @@ class ShelfViewModel(private val deps: AppDependencies) : ViewModel() {
         }
     }
 
+    /**
+     * 退出排序模式。
+     *
+     * 拖动只改了本地列表，没保存就说明用户不想保留新顺序，必须回到服务端顺序；
+     * 全部拖完就点「保存」的路径由 [commitOrder] 落库后再退出，不经过这里。
+     */
     fun exitSortMode() {
+        if (!_state.value.sortMode) return
         _state.update { it.copy(sortMode = false) }
+        load(showLoading = false)
     }
 
     /** 拖动时按「移动一步」实时换位，松手后由 [commitOrder] 整架落库。 */
@@ -197,14 +207,28 @@ class ShelfViewModel(private val deps: AppDependencies) : ViewModel() {
         _state.update { it.copy(books = list) }
     }
 
+    /**
+     * 整架顺序落库。
+     *
+     * 走 `/saveBookOrder`：只提交 bookId 顺序，服务端**只写 position 一列**，
+     * 其余字段（`infoHtml`/`tocHtml`/`canReName`/`downloadUrls` 等）原样保留。
+     * 旧实现走 `/saveBooks` 整架替换，安卓 `Book` DTO 缺那四列 → 一拖顺序
+     * 就把它们写空（R-01）。
+     *
+     * 成功时**保留本地 books**：服务端只改了 position，本地列表已经就是权威顺序，
+     * 用响应回填反而会闪一下。失败时原样展示后端文案——400「书架已变化，
+     * 请刷新后重试」说明本地视图过期（期间在别处加/删过书），照原文提示用户。
+     */
     fun commitOrder() {
         val state = _state.value
         if (!state.sortMode || state.isSavingOrder) return
+        val bookIds = state.books.map { it.bookId }
+        if (bookIds.isEmpty()) return
         _state.update { it.copy(isSavingOrder = true) }
         viewModelScope.launch {
-            when (val result = deps.api.saveBooks(state.books)) {
+            when (val result = deps.api.saveBookOrder(bookIds)) {
                 is ApiResult.Success -> {
-                    _state.update { it.copy(isSavingOrder = false, sortMode = false, books = result.value) }
+                    _state.update { it.copy(isSavingOrder = false, sortMode = false) }
                     _messages.tryEmit("书架顺序已保存")
                 }
 
@@ -221,8 +245,9 @@ class ShelfViewModel(private val deps: AppDependencies) : ViewModel() {
     /**
      * 分组上移/下移。
      *
-     * `/saveBookGroupOrder` 是整表提交语义（不在列表里的分组会被删除），
-     * 所以必须带完整分组列表，并按新下标重写 orderNo。
+     * `/saveBookGroupOrder` 的 body 是**裸数组** `[{"groupId":1,"orderNo":0}, …]`，
+     * 后端只按 `orderNo` 重排，不删组、不读 groupName。
+     * `orderNo` 按当前分组列表的下标生成（0 起连续），这样本地顺序与后端一致。
      */
     fun moveGroup(groupId: Long, delta: Int) {
         val groups = _state.value.groups.toMutableList()
@@ -233,9 +258,12 @@ class ShelfViewModel(private val deps: AppDependencies) : ViewModel() {
         val item = groups.removeAt(from)
         groups.add(to, item)
         val ordered = groups.mapIndexed { index, group -> group.copy(orderNo = index) }
+        val items = ordered.mapIndexed { index, group ->
+            BookGroupOrderItem(groupId = group.groupId, orderNo = index)
+        }
         _state.update { it.copy(groups = ordered) }
         viewModelScope.launch {
-            when (val result = deps.api.saveBookGroupOrder(ordered)) {
+            when (val result = deps.api.saveBookGroupOrder(items)) {
                 is ApiResult.Success -> Unit
                 is ApiResult.Failure -> {
                     _messages.tryEmit(result.message)
@@ -246,6 +274,19 @@ class ShelfViewModel(private val deps: AppDependencies) : ViewModel() {
     }
 
     // ─── 本地书导入 ──────────────────────────────────────────────────────────
+
+    /**
+     * 文件选择结果入口（`rememberBookFilePicker` 的回调）。
+     *
+     * 选择阶段的失败（超 100MB、provider 读不出、权限失效）直接提示原因，
+     * 不再像旧实现那样被 `.getOrNull()` 吞掉（R-20）；成功才进上传流程。
+     */
+    fun onPickResult(result: PickResult) {
+        when (result) {
+            is PickResult.Success -> importBook(result.file)
+            is PickResult.Failure -> _messages.tryEmit(result.message)
+        }
+    }
 
     fun importBook(file: PickedBookFile) {
         if (_state.value.isImporting) return

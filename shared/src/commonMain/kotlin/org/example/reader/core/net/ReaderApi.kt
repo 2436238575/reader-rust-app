@@ -1,6 +1,7 @@
 package org.example.reader.core.net
 
 import kotlinx.coroutines.flow.Flow
+import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -91,6 +92,22 @@ class ReaderApi(
             json.encodeToString(SaveBooksRequest.serializer(), SaveBooksRequest(books, restore)),
         )
 
+    /**
+     * 只保存书架顺序（`/saveBookOrder`）。
+     *
+     * 服务端只写 position 一列，其余字段原样保留——这是 R-01 的正解：
+     * 旧实现走 `/saveBooks`，服务端 DELETE 后按请求重插，而安卓 `Book` DTO
+     * 缺 `infoHtml`/`tocHtml`/`canReName`/`downloadUrls`，一拖顺序就把这四列写空。
+     *
+     * [bookIds] 必须是**当前书架的完整集合**（与视图顺序一致），否则后端 400
+     * 「书架已变化，请刷新后重试」——说明本地视图过期，需要重新拉书架。
+     */
+    suspend fun saveBookOrder(bookIds: List<String>): ApiResult<Unit> =
+        post(
+            "/saveBookOrder",
+            json.encodeToString(SaveBookOrderRequest.serializer(), SaveBookOrderRequest(bookIds)),
+        )
+
     suspend fun deleteBook(bookId: String): ApiResult<String> =
         post("/deleteBook", json.encodeToString(BookIdRequest.serializer(), BookIdRequest(bookId)))
 
@@ -143,14 +160,16 @@ class ReaderApi(
             ),
         )
 
-    /** 分组排序：整组数组按新顺序回传，后端按下标写 orderNo。 */
-    suspend fun saveBookGroupOrder(groups: List<BookGroup>): ApiResult<Unit> =
+    /**
+     * 分组排序：body 是裸数组 `[{"groupId":1,"orderNo":0}, …]`。
+     *
+     * 后端只改顺序、不删组，也不读 `groupName`；提交未列出的分组保持原样。
+     * 旧实现的整表提交语义会把「不在列表里的分组」删掉，别再回退到那种写法。
+     */
+    suspend fun saveBookGroupOrder(items: List<BookGroupOrderItem>): ApiResult<Unit> =
         post(
             "/saveBookGroupOrder",
-            json.encodeToString(
-                kotlinx.serialization.builtins.ListSerializer(BookGroup.serializer()),
-                groups,
-            ),
+            json.encodeToString(ListSerializer(BookGroupOrderItem.serializer()), items),
         )
 
     // ─── 目录与正文 ──────────────────────────────────────────────────────────

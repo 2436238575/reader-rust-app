@@ -151,6 +151,10 @@ data class BookSourceSummary(
 @Serializable
 data class Bookmark(
     @SerialName("bookId") val bookId: String = "",
+    /**
+     * 创建时间（毫秒时间戳）。**必填**：后端按它排序下发书签列表，
+     * 批量删除也按整条匹配，回传时必须原样带上，不要在这里重新取当前时间。
+     */
     val time: Long = 0,
     @SerialName("bookName") val bookName: String = "",
     @SerialName("bookAuthor") val bookAuthor: String = "",
@@ -160,9 +164,24 @@ data class Bookmark(
     @SerialName("chapterName") val chapterName: String? = null,
     @SerialName("bookText") val bookText: String? = null,
     val content: String? = null,
-    /** 缺省按章书签处理。 */
-    val kind: String? = null,
-)
+    /**
+     * 类型：`bookmark`（章书签）/ `underline`（划线）。
+     *
+     * 用非空默认值而不是 `String?`：`ReaderJson` 开了 `explicitNulls = false`，
+     * 可空字段为 null 时会被整体省略，后端把「缺省」一律当成 `bookmark`，
+     * 划线就被静默降级成章书签（R-09）。`encodeDefaults = true` 保证它一定
+     * 出现在请求体里。
+     */
+    val kind: String = KIND_BOOKMARK,
+) {
+    companion object {
+        /** 章书签。 */
+        const val KIND_BOOKMARK: String = "bookmark"
+
+        /** 划线。 */
+        const val KIND_UNDERLINE: String = "underline"
+    }
+}
 
 /** 内容净化规则。`scope`：`*` 全部书籍 / `book:<id>` / `source:<id>`。 */
 @Serializable

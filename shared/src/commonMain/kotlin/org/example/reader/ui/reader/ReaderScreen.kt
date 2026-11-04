@@ -77,7 +77,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
@@ -92,6 +91,8 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import org.example.reader.core.AppDependencies
 import org.example.reader.core.model.Book
+import org.example.reader.core.platform.ApplyWindowBrightness
+import org.example.reader.core.platform.rememberSystemBrightness
 import org.example.reader.core.settings.ReadMethod
 import org.example.reader.core.settings.ReaderSettings
 import org.example.reader.core.util.AppBackHandler
@@ -129,7 +130,20 @@ fun ReaderScreen(
     }
     val state by viewModel.state.collectAsStateWithLifecycle()
     val settings by deps.readerSettings.state.collectAsStateWithLifecycle()
-    val palette = readerPalette(settings.themeIndex)
+    val palette = readerPalette(settings.themeIndex).let {
+        if (settings.eyeCare) it.highContrast() else it
+    }
+    // 亮度初值取自系统，不记忆：每次进入阅读器都读一次用户当前的屏幕亮度，
+    // 而不是沿用上次手动拖出来的值。从后台恢复不会重建组合，因此不会重读、
+    // 更不会把用户在阅读中调好的亮度盖回系统值。
+    val systemBrightness = rememberSystemBrightness()
+    LaunchedEffect(systemBrightness) {
+        systemBrightness?.let { deps.readerSettings.setBrightness(it) }
+    }
+    // 亮度走**窗口级** screenBrightness（不改系统设置、不叠蒙版）：
+    // 蒙版会把正文和背景一起压暗，对比度随亮度下降而塌掉；窗口亮度由系统合成，
+    // 文字与背景的亮度差不变，暗处才读得清。离开阅读器自动还原原值。
+    ApplyWindowBrightness(settings.brightness)
     val listState = rememberLazyListState()
 
     var controlsVisible by rememberSaveable { mutableStateOf(true) }
@@ -148,14 +162,25 @@ fun ReaderScreen(
 
     LaunchedEffect(startIndex) { viewModel.applyStartIndex(startIndex) }
 
+    // 加载/刷新失败的可见提示。
+    // 正文区末尾虽然也有一个 error item，但读到 85% 处刷新失败时它落在屏幕外，
+    // 用户只会看到「什么都没发生」。这里统一走 snackbar，文案由 VM 给出
+    // （刷新失败会带「刷新失败：」前缀，与首次加载错误区分）。
+    LaunchedEffect(state.error) {
+        state.error?.let(hint)
+    }
+
     val horizontalMode = settings.method == ReadMethod.Horizontal || settings.method == ReadMethod.DualPage
 
     // 进入/切换翻页方式时的定位依据：优先服务端恢复位置，其次内存里的当前位置
     val restoreFraction = state.pendingScrollFraction ?: viewModel.currentFraction()
 
     // 竖排模式的定位：pendingScrollFraction 有值就恢复，否则回章首
-    LaunchedEffect(state.currentIndex, state.paragraphs, horizontalMode) {
+    LaunchedEffect(state.currentIndex, state.contentIndex, state.paragraphs, horizontalMode) {
         if (horizontalMode || state.paragraphs.isEmpty()) return@LaunchedEffect
+        // 换章时 currentIndex 先变、正文后到：此时 paragraphs 还是**上一章**的，
+        // 按它滚到「末尾」（prev 的方向）会闪一帧旧正文。等正文所属章对齐再定位。
+        if (state.contentIndex != state.currentIndex) return@LaunchedEffect
         val restore = restoreFraction
         if (restore > 0.001f) {
             // 列表还没量出项数时 totalItemsCount 是 0，等它稳定再定位
@@ -248,15 +273,6 @@ fun ReaderScreen(
             }
         }
 
-        // 亮度降低与护眼都是叠加蒙版：不改系统亮度，退出阅读器即失效
-        val dimAlpha = (1f - settings.brightness) * 0.6f
-        if (dimAlpha > 0.01f) {
-            Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = dimAlpha)))
-        }
-        if (settings.eyeCare) {
-            Box(Modifier.fillMaxSize().background(Color(0xFFFFB74D).copy(alpha = 0.10f)))
-        }
-
         AnimatedVisibility(
             visible = controlsVisible && !showCatalog,
             enter = fadeIn(tween(160)),
@@ -314,22 +330,29 @@ fun ReaderScreen(
 
     activePanel?.let { panel ->
         val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        // 面板跑在独立 Window（Dialog）里，容器色从阅读主题派生（不留白面板/亮粉面板），
+        // 亮度则在这里**再设一次窗口亮度**：面板窗口有自己的 LayoutParams，
+        // 不设就会掉回系统亮度，低亮度下打开设置会闪一下变亮。
         val sheetScheme = readerSheetColorScheme(palette)
         ModalBottomSheet(
             onDismissRequest = { activePanel = null },
             sheetState = sheetState,
-            containerColor = sheetScheme.surfaceContainerLow,
+            containerColor = sheetScheme.surface,
         ) {
             // ModalBottomSheet 不会因为 containerColor 变化而推导内容色，
             // LocalContentColor 仍是外层主题的深色 —— 暗面板上标签会整片看不见。
             CompositionLocalProvider(LocalContentColor provides sheetScheme.onSurface) {
                 MaterialTheme(colorScheme = sheetScheme) {
+                    ApplyWindowBrightness(settings.brightness)
                     when (panel) {
                         ReaderPanel.Settings -> ReaderSettingsPanel(
                             settings = settings,
+                            // 滑杆拖动中只改内存（正文/面板实时跟随），松手才落盘
+                            onFontSizePreview = deps.readerSettings::previewFontSize,
                             onFontSizeChange = deps.readerSettings::setFontSize,
                             onThemeChange = deps.readerSettings::setTheme,
                             onMethodChange = deps.readerSettings::setMethod,
+                            onBrightnessPreview = deps.readerSettings::previewBrightness,
                             onBrightnessChange = deps.readerSettings::setBrightness,
                             onEyeCareChange = deps.readerSettings::setEyeCare,
                             onLineHeightChange = deps.readerSettings::setLineHeight,
@@ -463,6 +486,10 @@ private fun ReaderTopBar(
     Column(
         modifier = Modifier
             .fillMaxWidth()
+            // 消费点击：控件是覆盖层，点书名/圆钮之间的空白若穿透到正文，
+            // 会把控件又切回收起状态（R-08，与底栏一致的处理）。
+            // 圆钮/菜单是更深的节点，自己先拿到事件，不会被这里抢走。
+            .pointerInput(Unit) { detectTapGestures { } }
             // 控件是覆盖层，正文会滚到下面；用同色渐变盖住，避免书名/章名与正文叠字。
             // 只做视觉遮挡，不参与布局，所以切换控件时正文不会跳动。
             .background(
@@ -512,31 +539,42 @@ private fun ReaderTopBar(
                     palette = palette,
                     onClick = { onMoreExpandedChange(true) },
                 )
+                // 菜单是 Popup（独立 Window），默认用应用主题的亮色 surface ——
+                // 暗色正文下这就是「整屏最亮的一块」。这里用 palette 派生的面板色，
+                // 并**同时**提供 LocalContentColor 与 MaterialTheme
+                // （AGENTS「已知陷阱 6」：只改 containerColor 会让标签沿用外层深色，
+                // 暗底上整片看不见）。亮度由窗口级 screenBrightness 统一压暗，不再手算。
+                val menuScheme = readerSheetColorScheme(palette)
                 DropdownMenu(
                     expanded = moreExpanded,
                     onDismissRequest = { onMoreExpandedChange(false) },
+                    containerColor = menuScheme.surface,
                 ) {
-                    DropdownMenuItem(
-                        text = { Text(if (isNight) "日间模式" else "夜间模式") },
-                        onClick = {
-                            onMoreExpandedChange(false)
-                            onToggleNight()
-                        },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("书籍详情") },
-                        onClick = {
-                            onMoreExpandedChange(false)
-                            onShowDetail()
-                        },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("目录") },
-                        onClick = {
-                            onMoreExpandedChange(false)
-                            onOpenCatalog()
-                        },
-                    )
+                    CompositionLocalProvider(LocalContentColor provides menuScheme.onSurface) {
+                        MaterialTheme(colorScheme = menuScheme) {
+                            DropdownMenuItem(
+                                text = { Text(if (isNight) "日间模式" else "夜间模式") },
+                                onClick = {
+                                    onMoreExpandedChange(false)
+                                    onToggleNight()
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("书籍详情") },
+                                onClick = {
+                                    onMoreExpandedChange(false)
+                                    onShowDetail()
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("目录") },
+                                onClick = {
+                                    onMoreExpandedChange(false)
+                                    onOpenCatalog()
+                                },
+                            )
+                        }
+                    }
                 }
             }
         }

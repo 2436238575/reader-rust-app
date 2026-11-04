@@ -35,6 +35,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -62,10 +63,17 @@ import kotlin.math.roundToInt
 @Composable
 fun ReaderSettingsPanel(
     settings: ReaderSettings,
+    /** 字号滑杆拖动中：只改内存态，正文实时重排。 */
+    onFontSizePreview: (Int) -> Unit,
+    /** 字号最终落盘（滑杆松手 / 步进按钮）。 */
     onFontSizeChange: (Int) -> Unit,
     onThemeChange: (Int) -> Unit,
     onMethodChange: (ReadMethod) -> Unit,
+    /** 亮度滑杆拖动中：只改内存态，当前窗口亮度实时跟随。 */
+    onBrightnessPreview: (Float) -> Unit,
+    /** 亮度最终落盘（滑杆松手）。 */
     onBrightnessChange: (Float) -> Unit,
+    /** 护眼开关：只提高正文对比度，不叠加任何颜色蒙版。 */
     onEyeCareChange: (Boolean) -> Unit,
     onLineHeightChange: (Float) -> Unit,
     onParagraphSpacingChange: (Float) -> Unit,
@@ -94,12 +102,14 @@ fun ReaderSettingsPanel(
         BrightnessRow(
             brightness = settings.brightness,
             eyeCare = settings.eyeCare,
+            onBrightnessPreview = onBrightnessPreview,
             onBrightnessChange = onBrightnessChange,
             onEyeCareChange = onEyeCareChange,
         )
 
         FontSizeRow(
             fontSize = settings.fontSize,
+            onFontSizePreview = onFontSizePreview,
             onFontSizeChange = onFontSizeChange,
             onOpenFontFamily = { onHint("字体选择将在 P1-1 后续接入") },
         )
@@ -155,46 +165,97 @@ fun ReaderSettingsPanel(
     }
 }
 
+/**
+ * 亮度行。
+ *
+ * 亮度写的是**当前应用窗口**的 `screenBrightness`（见 `ApplyWindowBrightness`），
+ * 不是叠一层黑色蒙版：蒙版会让正文与背景一起变暗、对比度塌掉，暗处反而更看不清。
+ *
+ * 拖动中走 [onBrightnessPreview]（只改内存态，窗口亮度实时跟进），
+ * 松手才走 [onBrightnessChange] 落盘 —— 否则每一帧都会连写 7 个 SharedPreferences 键。
+ * 本地 `dragValue` 保证 `onValueChangeFinished` 拿到的是松手瞬间的值，
+ * 不依赖回调闭包里的旧快照。
+ *
+ * 「护眼」保持开关形态，作用是提高正文对比度（低蓝光由系统护眼模式负责，
+ * 各家做得比应用层色偏滤镜更好），下面一行小字说明，避免被误解成滤镜。
+ */
 @Composable
 private fun BrightnessRow(
     brightness: Float,
     eyeCare: Boolean,
+    onBrightnessPreview: (Float) -> Unit,
     onBrightnessChange: (Float) -> Unit,
     onEyeCareChange: (Boolean) -> Unit,
 ) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Text("亮度", style = MaterialTheme.typography.labelLarge)
-        Slider(
-            value = brightness,
-            onValueChange = onBrightnessChange,
-            valueRange = ReaderSettings.MIN_BRIGHTNESS..1f,
-            modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
-        )
-        FilterChip(
-            selected = eyeCare,
-            onClick = { onEyeCareChange(!eyeCare) },
-            label = { Text("护眼") },
+    var dragValue by remember(brightness) { mutableFloatStateOf(brightness) }
+    Column {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("亮度", style = MaterialTheme.typography.labelLarge)
+            Slider(
+                value = dragValue,
+                onValueChange = { value ->
+                    dragValue = value
+                    onBrightnessPreview(value)
+                },
+                onValueChangeFinished = { onBrightnessChange(dragValue) },
+                valueRange = ReaderSettings.MIN_BRIGHTNESS..ReaderSettings.MAX_BRIGHTNESS,
+                modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+            )
+            FilterChip(
+                selected = eyeCare,
+                onClick = { onEyeCareChange(!eyeCare) },
+                label = { Text("护眼") },
+            )
+        }
+        Text(
+            text = "护眼：提高正文对比度（不叠加颜色蒙版，低蓝光请用系统护眼）",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.End,
+            modifier = Modifier.fillMaxWidth().padding(end = 4.dp),
         )
     }
 }
 
+/**
+ * 字号行：步进按钮 + 滑杆。
+ *
+ * 步进按钮是离散的一次性操作，直接落盘；滑杆与亮度同理，
+ * 拖动中只预览、松手落盘（`steps` 让取值按 1sp 吸附，不会拖出 18.37 这种字号）。
+ */
 @Composable
 private fun FontSizeRow(
     fontSize: Int,
+    onFontSizePreview: (Int) -> Unit,
     onFontSizeChange: (Int) -> Unit,
     onOpenFontFamily: () -> Unit,
 ) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        StepButton(label = "A−", onClick = { onFontSizeChange(fontSize - 1) })
-        Text(
-            text = "$fontSize",
-            style = MaterialTheme.typography.titleMedium,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.width(44.dp),
+    var dragValue by remember(fontSize) { mutableFloatStateOf(fontSize.toFloat()) }
+    Column {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            StepButton(label = "A−", onClick = { onFontSizeChange(fontSize - 1) })
+            Text(
+                text = "$fontSize",
+                style = MaterialTheme.typography.titleMedium,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.width(44.dp),
+            )
+            StepButton(label = "A＋", onClick = { onFontSizeChange(fontSize + 1) })
+            Spacer(Modifier.weight(1f))
+            TextButton(onClick = onOpenFontFamily) { Text("系统字体") }
+        }
+        Slider(
+            value = dragValue,
+            onValueChange = { value ->
+                dragValue = value
+                onFontSizePreview(value.roundToInt())
+            },
+            onValueChangeFinished = { onFontSizeChange(dragValue.roundToInt()) },
+            valueRange = ReaderSettings.MIN_FONT_SIZE.toFloat()..ReaderSettings.MAX_FONT_SIZE.toFloat(),
+            // 步数 = 中间可停的整数值个数，让滑杆按 1sp 吸附
+            steps = (ReaderSettings.MAX_FONT_SIZE - ReaderSettings.MIN_FONT_SIZE - 1).coerceAtLeast(0),
+            modifier = Modifier.fillMaxWidth(),
         )
-        StepButton(label = "A＋", onClick = { onFontSizeChange(fontSize + 1) })
-        Spacer(Modifier.weight(1f))
-        TextButton(onClick = onOpenFontFamily) { Text("系统字体") }
     }
 }
 

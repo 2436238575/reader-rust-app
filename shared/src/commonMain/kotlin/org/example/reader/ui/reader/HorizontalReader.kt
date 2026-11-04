@@ -21,8 +21,10 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.snapshotFlow
@@ -211,6 +213,10 @@ private fun PagedContent(
     // 与竖排一致：档位改动要立刻生效，不靠重进阅读器。
     val currentClickAction by rememberUpdatedState(clickAction)
 
+    // null 表示恢复尚未完成。它同时是 snapshotFlow 的观察项，恢复完成后会立即
+    // 以目标页触发一次上报，而不是等待用户再翻一页。
+    var completedRestoreTarget by remember { mutableStateOf<Int?>(null) }
+
     // 进入本页时定位一次：比例 → 段落 → 它所在的页
     LaunchedEffect(Unit) {
         val target = if (restoreFraction > 0.001f) {
@@ -220,6 +226,7 @@ private fun PagedContent(
             0
         }
         pagerState.scrollToPage(target)
+        completedRestoreTarget = target
         if (restoreFraction > 0.001f) onRestoreConsumed()
     }
 
@@ -228,8 +235,11 @@ private fun PagedContent(
     // 这里必须与 [pageStartFraction] / [paragraphAtFraction] 的映射严格互逆：
     // 旧实现上报页尾（`startParagraph + blocks.size`）、恢复却按页首落页，
     // 于是「退出 → 重进」每次都前进一页（A4，末页除外的假象来自末页没有下一页可进）。
+    // scrollToPage 完成前，PagerState 默认的 currentPage == 0 不是真实阅读位置，
+    // 必须整体屏蔽；完成后只由目标页和后续真实 currentPage 变化驱动上报。
     LaunchedEffect(pagerState, pages) {
-        snapshotFlow { pagerState.currentPage }.collect { index ->
+        snapshotFlow { pagerState.currentPage to completedRestoreTarget }.collect { (index, restoredTarget) ->
+            if (restoredTarget == null) return@collect
             val page = pages.getOrNull(index) ?: return@collect
             val total = state.paragraphs.size
             if (total > 0) onProgress(pageStartFraction(page.startParagraph, total))

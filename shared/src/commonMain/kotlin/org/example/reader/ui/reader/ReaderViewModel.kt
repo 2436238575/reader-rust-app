@@ -2,6 +2,8 @@ package org.example.reader.ui.reader
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -97,6 +99,15 @@ class ReaderViewModel(
 
     /** 正在预取的目录下标，避免同一章重复请求。 */
     private val prefetching = mutableSetOf<Int>()
+
+    /**
+     * 连续阅读在途的单章请求：目录下标 → 结果通知。
+     *
+     * 连续阅读会同时为窗口里的多章取正文，滚动时同一章很容易被两次「进入窗口」触发。
+     * 这里让后到的那次直接 `await` 前一次的结果，而不是再发一条一模一样的请求
+     * （重复请求不仅浪费流量，还会让先返回的那条被后返回的覆盖，缓存顺序也跟着乱）。
+     */
+    private val continuousRequests = mutableMapOf<Int, CompletableDeferred<ChapterContent?>>()
 
     /** 当前章内位置（0..1），滚动时持续更新，落库时换算成万分比。 */
     private var lastFraction = 0f
@@ -334,10 +345,14 @@ class ReaderViewModel(
      * `contentCache` 是访问序 `LinkedHashMap`：`put` 与 `get` 都会把键挪到队尾，
      * 所以「写序 = 读序」，命中缓存即刷新顺序。守卫不要加在这里——
      * 预取与单章加载共用本缓存，加错位置会让预取静默失效。
+     *
+     * [pinned] 是**本次写入不能被裁掉**的目录下标集合：连续阅读的窗口有 7 章，
+     * 写完第 7 章时最前面那章仍在屏幕上，按普通 LRU 会被挤出去，表现为
+     * 「往回滚一屏就得重新加载」。窗口由调用方给出，这里只负责别裁它。
      */
-    private fun remember(index: Int, content: ChapterContent) {
+    private fun remember(index: Int, content: ChapterContent, pinned: Set<Int> = emptySet()) {
         contentCache[index] = content
-        trimCache()
+        trimCache(pinned)
     }
 
     /**
@@ -345,13 +360,128 @@ class ReaderViewModel(
      *
      * 正在读的章一旦被挤出，重进阅读器就会时而命中、时而落空，
      * 表现为「重进有时恢复到 85%、有时回到章首」（R-11）。没有可淘汰的键就停手。
+     *
+     * [pinned] 见 [remember]：连续阅读的可见窗口一律不裁。
      */
-    private fun trimCache() {
+    private fun trimCache(pinned: Set<Int> = emptySet()) {
         while (contentCache.size > CONTENT_CACHE_SIZE) {
             val current = _state.value.currentIndex
-            val victim = contentCache.keys.firstOrNull { it != current } ?: break
+            val victim = contentCache.keys.firstOrNull { it != current && it !in pinned } ?: break
             contentCache.remove(victim)
         }
+    }
+
+    // ─── 连续阅读（上下滚动 / 上下滚动2） ──────────────────────────────────────
+
+    /**
+     * 只读缓存：命中返回正文，未命中返回 null。
+     *
+     * **不触发网络、不改任何状态**，连续阅读用它判断「这一章能不能直接画出来」。
+     * 唯一副作用是访问序 `LinkedHashMap` 的 `get` 会把该章挪到「最近使用」，
+     * 这正是 LRU 想要的语义，不会引起重组（不是 Compose 状态）。
+     */
+    fun cachedContent(index: Int): ChapterContent? = contentCache[index]
+
+    /**
+     * 为连续阅读按需取一章正文（缓存优先，其次单章接口）。
+     *
+     * 与 [loadContent] 的区别是**只取内容、不动状态机**：
+     * - 不改 `currentIndex`（连续模式里「当前章」由界面按可见位置回传）；
+     * - 不动 [generation]（连续模式没有「本次请求是唯一有效」的语义，各章互不排斥）；
+     * - 不写进度（何时同步位置由 [syncContinuousPosition] 决定）。
+     *
+     * 同一章的并发调用共用一次请求（见 [continuousRequests]）。
+     * [pinned] 直接转给 [remember]，保证窗口内的章不会被 LRU 裁掉。
+     */
+    suspend fun fetchChapterForContinuous(
+        index: Int,
+        pinned: Set<Int> = emptySet(),
+    ): ChapterContent? {
+        val chapter = _state.value.chapters.getOrNull(index) ?: return null
+        cachedContent(index)?.let { return it }
+        // 同章在途：等它的结果，不再发第二条请求
+        continuousRequests[index]?.let { return it.await() }
+        val deferred = CompletableDeferred<ChapterContent?>()
+        continuousRequests[index] = deferred
+        return try {
+            val result = deps.api.getBookContent(
+                bookId = bookId,
+                chapterUrl = chapter.url,
+                index = chapter.index,
+            )
+            val content = (result as? ApiResult.Success)?.value
+            if (content != null) remember(index, content, pinned)
+            deferred.complete(content)
+            content
+        } catch (e: CancellationException) {
+            // 调用方被取消（切书 / 离开阅读器）：把等在同一个请求上的兄弟协程一起了结，
+            // 否则它们会一直挂着等一个永远不会完成的 Deferred
+            deferred.complete(null)
+            throw e
+        } finally {
+            continuousRequests.remove(index)
+        }
+    }
+
+    /**
+     * 保证 `paragraphs` 属于 [ReaderUiState.currentIndex]（不属于就补一次加载）。
+     *
+     * 连续阅读滚动时**只改 `currentIndex`、不动 `contentIndex`**（正文是整块窗口，
+     * `paragraphs` 只是顺手加载的那一章）。一旦切回单章竖排 / 横翻，两种渲染都以
+     * `contentIndex == currentIndex` 为守卫：没人补这一刀，横翻会停在「正文为空」，
+     * 竖排会显示上一章的正文，且没有任何路径会自愈（要等用户点「下一章」）。
+     *
+     * 走缓存优先的 [loadContent]，并把当前位置作为恢复参数带上：
+     * 换的只是「正文归属」，不该顺带把人送回章首。
+     */
+    fun ensureContentForCurrentIndex() {
+        val state = _state.value
+        if (state.chapters.isEmpty()) return
+        if (state.contentIndex == state.currentIndex) return
+        // 正常换章本来就是「currentIndex 先变、正文后到」，此刻 isLoadingContent 必为真。
+        // 这种在途请求不能插手：再发一次会把它按代际作废，白跑一次网络；等它落地后
+        // 调用方（界面按 contentIndex/currentIndex 变化重跑）自然会再判一次。
+        if (state.isLoadingContent) return
+        // force = false：命中缓存就别发请求（连续阅读刚把这章取过，通常必中）
+        loadContent(index = state.currentIndex, restoreFraction = currentFraction())
+    }
+
+    /**
+     * 连续滚动时同步「当前章」与章内位置。
+     *
+     * [fraction] 的单位与其它两种翻页方式一致：**段落比例**（首个可见段落下标 / 段数），
+     * 不是像素也不是含章头/章尾的项数（R-06）。
+     *
+     * 只有 [index] 变化才改章号、`book` 的进度字段与最近阅读——连续滚动时每段都会回调，
+     * 每段都写一遍最近阅读是纯浪费，也会让「最近阅读」的时间戳变成滚动时间。
+     *
+     * **不动 `contentIndex`**：`contentIndex` 的语义是「`paragraphs` 属于哪一章」，
+     * 用来在换章时卡住排版（正文没到别急着分页）。连续模式下正文是一整块窗口，
+     * `paragraphs` 只是 VM 顺手加载的那一章的副本，与可见位置无关。
+     * 因此**不要**在连续模式里用 `contentIndex != currentIndex` 当守卫——那会一直成立，
+     * 把整块正文挡掉。
+     */
+    fun syncContinuousPosition(index: Int, fraction: Float) {
+        val state = _state.value
+        val chapter = state.chapters.getOrNull(index) ?: return
+        val position = fraction.coerceIn(0f, 1f)
+        if (index != state.currentIndex) {
+            val book = state.book?.copy(
+                durChapterIndex = index,
+                durChapterTitle = chapter.title,
+                durChapterTime = nowMillis(),
+                durChapterPos = (position * 10000).roundToInt(),
+            )
+            _state.update { it.copy(currentIndex = index, book = book ?: it.book) }
+            if (book != null) deps.recentBooks.record(book)
+            // 换章是一次「位置语义变更」，不该被 10s 节流窗口压住：
+            // 取消挂起的补存并把上次保存时间清零，让紧接着的 onScrolled 立刻落库。
+            // 顺序很重要——先改 currentIndex 再落库，否则写进库的是「旧章 × 新位置」。
+            pendingSaveJob?.cancel()
+            pendingSaveJob = null
+            lastSavedAt = 0L
+        }
+        onScrolled(position)
     }
 
     // ─── 进度 ──────────────────────────────────────────────────────────────────
@@ -381,11 +511,21 @@ class ReaderViewModel(
     /**
      * 当前内存里的章内位置（0..1）。
      *
-     * ViewModel 按 bookId 注册在 Activity 作用域，重进/切换翻页方式都不会重建，
-     * 界面进入时用 `pendingScrollFraction ?: currentFraction()` 定位，
-     * 否则会退回章首并把进度冲成 0。
+     * ViewModel 按 bookId 注册在 Activity 作用域，重进/切换翻页方式都不会重建。
+     * 界面进入/切换模式时直接用它定位；`pendingScrollFraction` 只是待消费的一次性
+     * UI 指令，不能优先于这个位置真源，否则残留指令会把视口拽回旧处。
      */
     fun currentFraction(): Float = lastFraction
+
+    /**
+     * 切换渲染方式前同步真实可见位置，只更新内存真源，不另发一次中间进度请求。
+     * 取消旧位置补存；目标渲染器完成定位后会按自己的页首口径接管保存。
+     */
+    fun onModeSwitchPosition(fraction: Float) {
+        pendingSaveJob?.cancel()
+        pendingSaveJob = null
+        lastFraction = fraction.coerceIn(0f, 1f)
+    }
 
     /** 界面对着 [ReaderUiState.pendingScrollFraction] 滚完一次后调用，避免重复恢复。 */
     fun consumePendingScroll() {
@@ -467,23 +607,32 @@ class ReaderViewModel(
         }
     }
 
-    /**
-     * 正文按行切段。
-     *
-     * 后端正文是纯文本 + `\n` 分段，但可能夹带 HTML 片段（配图 `<figure>`）。
-     * 这里保留原样交给渲染层判断，不做破坏性清洗——清洗规则属于
-     * 服务端「净化规则」的职责。
-     */
-    private fun splitParagraphs(content: String): List<String> =
-        content.split('\n')
-            .map { it.trim() }
-            .filter { it.isNotEmpty() }
-
     private companion object {
-        /** 常驻正文缓存的章数。再多意义不大：跨章回看有预取兜底。 */
-        const val CONTENT_CACHE_SIZE = 8
+        /**
+         * 常驻正文缓存的章数。
+         *
+         * 连续阅读的可见窗口最宽 7 章（当前章 ±3），它们全在 [trimCache] 的 `pinned` 里；
+         * 余下几章留给「刚滚过去的那几章」，往回翻一屏不必再取。再多意义不大：
+         * 更远的章有单章接口与批量预取兜底。
+         */
+        const val CONTENT_CACHE_SIZE = 12
 
         /** 进度上报节流窗口，与前端 `readerProgressAutoSave` 一致。 */
         const val PROGRESS_SAVE_INTERVAL_MS = 10_000L
     }
 }
+
+/**
+ * 正文按行切段。
+ *
+ * 后端正文是纯文本 + `\n` 分段，但可能夹带 HTML 片段（配图 `<figure>`）。
+ * 这里保留原样交给渲染层判断，不做破坏性清洗——清洗规则属于服务端「净化规则」的职责。
+ *
+ * 放在文件级（而不是 [ReaderViewModel] 的私有方法里）是因为连续阅读要在渲染层
+ * 把取回的正文切成段落：两边必须是**同一套**切分规则，否则
+ * 「单章阅读」与「连续阅读」的段落数与段落下标会对不上，进度换算随之偏移。
+ */
+internal fun splitParagraphs(content: String): List<String> =
+    content.split('\n')
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }

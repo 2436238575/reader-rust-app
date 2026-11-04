@@ -192,32 +192,72 @@ fun ReaderScreen(
     }
 
     val horizontalMode = settings.method == ReadMethod.Horizontal || settings.method == ReadMethod.DualPage
+    // 连续阅读：整块窗口拼多章。与横翻互斥，也不参与横翻的定位/上报路径
+    // （那边按「章内段落」算，连续模式按「窗口内首个可见 item」算，各管各的）。
+    val continuousMode =
+        settings.method == ReadMethod.Scroll || settings.method == ReadMethod.Scroll2
 
-    // 进入/切换翻页方式时的定位依据：优先服务端恢复位置，其次内存里的当前位置
-    val restoreFraction = state.pendingScrollFraction ?: viewModel.currentFraction()
+    // 进入/切换翻页方式时只从 VM 的位置真源恢复；pendingScrollFraction 是待消费的一次性
+    // UI 指令，可能残留旧值，不能覆盖 currentFraction()。
+    val restoreFraction = viewModel.currentFraction()
 
-    // 竖排模式的定位：pendingScrollFraction 有值就恢复，否则回章首
-    LaunchedEffect(state.currentIndex, state.contentIndex, state.paragraphs, horizontalMode) {
-        if (horizontalMode || state.paragraphs.isEmpty()) return@LaunchedEffect
+    // 单章竖排按 currentFraction 恢复；pendingScrollFraction 仍由原路径在滚完后消费。
+    // 横翻自己定位（PagerState），连续模式也自己定位（窗口要等正文到位）——两边都跳过这里。
+    LaunchedEffect(
+        state.currentIndex,
+        state.contentIndex,
+        state.paragraphs,
+        horizontalMode,
+        continuousMode,
+    ) {
+        if (horizontalMode || continuousMode || state.paragraphs.isEmpty()) return@LaunchedEffect
         // 换章时 currentIndex 先变、正文后到：此时 paragraphs 还是**上一章**的，
         // 按它滚到「末尾」（prev 的方向）会闪一帧旧正文。等正文所属章对齐再定位。
         if (state.contentIndex != state.currentIndex) return@LaunchedEffect
         val restore = restoreFraction
-        if (restore > 0.001f) {
-            // 列表还没量出项数时 totalItemsCount 是 0，等它稳定再定位
-            val total = snapshotFlow { listState.layoutInfo.totalItemsCount }.first { it > 0 }
-            val target = (restore * total).toInt().coerceIn(0, total - 1)
-            listState.scrollToItem(target)
+        // 口径统一为**段落比例**（R-06）：上报是「首个可见段落下标 / 段数」，
+        // 恢复必须用它的逆运算，否则退出重进会稳定偏移若干段。
+        // 列表第 0 项是章头，段落 item 的下标 = 段落下标 + 1。
+        val total = state.paragraphs.size
+        if (restore > 0.001f && total > 0) {
+            val paragraph = (restore * total).roundToInt().coerceIn(0, total)
+            listState.scrollToItem((paragraph + 1).coerceIn(0, total))
             viewModel.consumePendingScroll()
         } else {
             listState.scrollToItem(0)
         }
     }
 
-    // 章内位置回传：VM 内部按 10s 节流落库，不必在这里控频
-    LaunchedEffect(listState, state.currentIndex, horizontalMode) {
-        if (horizontalMode) return@LaunchedEffect
-        snapshotFlow { listState.chapterFraction() }.collect { viewModel.onScrolled(it) }
+    // 章内位置回传：VM 内部按 10s 节流落库，不必在这里控频。
+    // 连续模式自己按窗口回传（见 ContinuousReader），这里跳过，否则会按单章的项数报错章。
+    LaunchedEffect(
+        listState,
+        state.currentIndex,
+        horizontalMode,
+        continuousMode,
+        state.paragraphs.size,
+    ) {
+        if (horizontalMode || continuousMode) return@LaunchedEffect
+        val paragraphCount = state.paragraphs.size
+        snapshotFlow { listState.chapterParagraphFraction(paragraphCount) }
+            .collect { viewModel.onScrolled(it) }
+    }
+
+    // 连续模式只改 `currentIndex`、不动 `contentIndex`（正文是整块窗口）。切回单章竖排 /
+    // 横翻后「正文所属章」会落后于当前章，而这两种渲染都以 `contentIndex == currentIndex`
+    // 为守卫 —— 没人补这一刀就会停在「正文为空」或显示上一章正文，且不会自愈。
+    //
+    // 除「切翻页方式」外也挂在两个下标上：切换那一刻若正有一条加载在途，
+    // `ensureContentForCurrentIndex` 会主动让路（见其注释），等它落地后这里会再判一次。
+    LaunchedEffect(
+        horizontalMode,
+        continuousMode,
+        state.currentIndex,
+        state.contentIndex,
+    ) {
+        // 连续模式内部 contentIndex 本来就滞后，这里绝不能插手
+        if (continuousMode) return@LaunchedEffect
+        if (state.contentIndex != state.currentIndex) viewModel.ensureContentForCurrentIndex()
     }
 
     // ------------------------------------------------------------------ 自动阅读（P1-8）
@@ -235,7 +275,12 @@ fun ReaderScreen(
     // 也避免用户离开后书还在自己往下翻）。手动翻章同理。
     // 翻页方式切到横翻/双页也一并打断：那时正文不再由 listState 承载，
     // 留着开关只会「按钮显示暂停、画面不动」。
-    LaunchedEffect(state.currentIndex, horizontalMode) { autoReading = false }
+    //
+    // **连续阅读例外**：那里的「换章」是滚过章末自然发生的（正文本来就是一整条连续的流），
+    // 每跨一章就停一次等于自动阅读根本没法用。手动跳章（目录 / 底栏滑块）都会显式停下。
+    LaunchedEffect(state.currentIndex, horizontalMode, continuousMode) {
+        if (!continuousMode) autoReading = false
+    }
 
     /**
      * 自动滚动循环。
@@ -293,6 +338,55 @@ fun ReaderScreen(
         // 滚到章末：停下并把「要不要继续」留给用户（不自动跳下一章）
         autoReading = false
     }
+
+    /**
+     * 竖排正文的点按层（单章竖排与连续阅读共用）。
+     *
+     * 挂在**内容区**而不是每个组件内部：`ContinuousReader` 自己再挂一层会双触发
+     * （一次切控件、一次被当成翻屏），横翻那套九宫格也早已在组件内部，不在此列。
+     */
+    val verticalTapModifier = Modifier
+        .fillMaxSize()
+        .pointerInput(autoReading) {
+            // 九宫格：上排上一屏、下排下一屏、中间一排切控件；
+            // 四边 4% 是防误触留白（相对屏宽/屏高，不是厘米）。
+            detectTapGestures { offset ->
+                // 自动阅读中点按 = 暂停（不翻屏、不切控件）；再点一次恢复
+                if (autoReading) {
+                    autoReading = false
+                    return@detectTapGestures
+                }
+                when (verticalTapZone(offset, size)) {
+                    // 读最新档位
+                    ReaderTapZone.Menu -> controlsVisible = !controlsVisible
+
+                    ReaderTapZone.Prev -> if (currentClickAction != ClickAction.NONE) {
+                        scope.launch {
+                            val viewport = listState.layoutInfo.viewportSize.height.toFloat()
+                            if (listState.canScrollBackward) {
+                                listState.animateScrollBy(-viewport * 0.8f)
+                            } else if (currentClickAction == ClickAction.AUTO) {
+                                // 到顶且 auto 才切章；落点由 VM 统一给 1f（章末）
+                                viewModel.prevChapter()
+                            }
+                        }
+                    }
+
+                    ReaderTapZone.Next -> if (currentClickAction != ClickAction.NONE) {
+                        scope.launch {
+                            val viewport = listState.layoutInfo.viewportSize.height.toFloat()
+                            if (listState.canScrollForward) {
+                                listState.animateScrollBy(viewport * 0.8f)
+                            } else if (currentClickAction == ClickAction.AUTO) {
+                                viewModel.nextChapter()
+                            }
+                        }
+                    }
+
+                    ReaderTapZone.Ignore -> Unit
+                }
+            }
+        }
 
     // 离开阅读器（返回 / 切页）时立刻落库，不等节流窗口
     DisposableEffect(Unit) {
@@ -355,6 +449,19 @@ fun ReaderScreen(
                     restoreFraction = restoreFraction,
                     modifier = Modifier.fillMaxSize(),
                 )
+            } else if (continuousMode) {
+                // 上下滚动：多章拼成一根列表；「上下滚动2」只多一个「隐藏已读章」
+                ContinuousReader(
+                    state = state,
+                    settings = settings,
+                    palette = palette,
+                    viewModel = viewModel,
+                    listState = listState,
+                    onToggleControls = { controlsVisible = !controlsVisible },
+                    restoreFraction = restoreFraction,
+                    hideReadChapters = settings.method == ReadMethod.Scroll2,
+                    modifier = verticalTapModifier,
+                )
             } else {
                 ReaderContent(
                     state = state,
@@ -363,50 +470,7 @@ fun ReaderScreen(
                     listState = listState,
                     onPrev = viewModel::prevChapter,
                     onNext = viewModel::nextChapter,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .pointerInput(autoReading) {
-                            // 九宫格：上排上一屏、下排下一屏、中间一排切控件；
-                            // 四边 4% 是防误触留白（相对屏宽/屏高，不是厘米）。
-                            detectTapGestures { offset ->
-                                // 自动阅读中点按 = 暂停（不翻屏、不切控件）；再点一次恢复
-                                if (autoReading) {
-                                    autoReading = false
-                                    return@detectTapGestures
-                                }
-                                when (verticalTapZone(offset, size)) {
-                                    // 读最新档位
-                                    ReaderTapZone.Menu -> controlsVisible = !controlsVisible
-
-                                    ReaderTapZone.Prev -> if (currentClickAction != ClickAction.NONE) {
-                                        scope.launch {
-                                            val viewport =
-                                                listState.layoutInfo.viewportSize.height.toFloat()
-                                            if (listState.canScrollBackward) {
-                                                listState.animateScrollBy(-viewport * 0.8f)
-                                            } else if (currentClickAction == ClickAction.AUTO) {
-                                                // 到顶且 auto 才切章；落点由 VM 统一给 1f（章末）
-                                                viewModel.prevChapter()
-                                            }
-                                        }
-                                    }
-
-                                    ReaderTapZone.Next -> if (currentClickAction != ClickAction.NONE) {
-                                        scope.launch {
-                                            val viewport =
-                                                listState.layoutInfo.viewportSize.height.toFloat()
-                                            if (listState.canScrollForward) {
-                                                listState.animateScrollBy(viewport * 0.8f)
-                                            } else if (currentClickAction == ClickAction.AUTO) {
-                                                viewModel.nextChapter()
-                                            }
-                                        }
-                                    }
-
-                                    ReaderTapZone.Ignore -> Unit
-                                }
-                            }
-                        },
+                    modifier = verticalTapModifier,
                 )
             }
         }
@@ -464,7 +528,13 @@ fun ReaderScreen(
                 autoReading = autoReading,
                 onPrev = viewModel::prevChapter,
                 onNext = viewModel::nextChapter,
-                onSeekChapter = viewModel::goToChapter,
+                onSeekChapter = { index ->
+                    // 拖滑块跳章是明确的人工操作：先停下自动阅读再跳。
+                    // 连续模式下「换章不打断自动阅读」（滚过章末是正常阅读），
+                    // 这条就是那个例外场景的兜底。
+                    autoReading = false
+                    viewModel.goToChapter(index)
+                },
                 onToggleAutoReading = toggleAutoReading,
                 onOpenCatalog = {
                     autoReading = false
@@ -510,7 +580,31 @@ fun ReaderScreen(
                             onFontSizePreview = deps.readerSettings::previewFontSize,
                             onFontSizeChange = deps.readerSettings::setFontSize,
                             onThemeChange = deps.readerSettings::setTheme,
-                            onMethodChange = deps.readerSettings::setMethod,
+                            onMethodChange = { method ->
+                                // 连续列表的最后一帧可能尚未经 snapshotFlow 回传；切横翻前直接
+                                // 从正文视口首个位置同步一次。visibleItemsInfo 原始首项可能只在
+                                // 顶部露出一截，共用选择器会跳过它；无合法候选则保留 VM 现值。
+                                val enteringHorizontal =
+                                    method == ReadMethod.Horizontal || method == ReadMethod.DualPage
+                                val handoff = if (continuousMode && enteringHorizontal &&
+                                    state.contentIndex == state.currentIndex
+                                ) {
+                                    val layout = listState.layoutInfo
+                                    val first = firstContinuousViewportItem(
+                                        items = layout.visibleItemsInfo,
+                                        viewportStart = layout.viewportStartOffset,
+                                    ) { it.offset }
+                                    continuousFractionForModeSwitch(
+                                        key = first?.key as? String,
+                                        currentChapter = state.currentIndex,
+                                        totalParagraphs = state.paragraphs.size,
+                                    )
+                                } else {
+                                    null
+                                }
+                                handoff?.let(viewModel::onModeSwitchPosition)
+                                deps.readerSettings.setMethod(method)
+                            },
                             onBrightnessPreview = deps.readerSettings::previewBrightness,
                             onBrightnessChange = deps.readerSettings::setBrightness,
                             onEyeCareChange = deps.readerSettings::setEyeCare,
@@ -977,17 +1071,21 @@ private suspend fun autoScrollStep(block: suspend () -> Unit): Boolean =
     }
 
 /**
- * 章内阅读位置（0..1）。
+ * 章内阅读位置（0..1），**段落比例**口径（R-06）。
  *
- * LazyColumn 拿不到像素级总高度，用「首个可见项下标 + 项内位移 / 总项数」估算：
- * 段落高度接近，误差在一两句之内，足够表达万分比进度。
+ * 列表结构固定是「章头 item + 段落 item + 尾部若干 item」，只有段落能表达「读到哪」：
+ * 旧实现拿 `totalItemsCount` 当分母、拿块下标当分子，分母里混进了章头/进度/错误/翻章行，
+ * 于是同一段落在竖排与横翻（按段落下标）算出来的比例不同，换模式或重进就稳定差一页。
+ *
+ * 这里分子一律是「首个可见段落下标」（首项是章头时取 0），分母是该章段数，
+ * 与 `HorizontalReader` 的 `pageStartFraction`、连续阅读的上报口径完全一致。
  */
-private fun androidx.compose.foundation.lazy.LazyListState.chapterFraction(): Float {
-    val info = layoutInfo
-    val total = info.totalItemsCount
-    if (total <= 0) return 0f
-    val first = info.visibleItemsInfo.firstOrNull() ?: return 0f
-    val itemHeight = first.size.toFloat().coerceAtLeast(1f)
-    val scrolled = first.index + (info.viewportStartOffset - first.offset).toFloat() / itemHeight
-    return (scrolled / total).coerceIn(0f, 1f)
+private fun androidx.compose.foundation.lazy.LazyListState.chapterParagraphFraction(
+    paragraphCount: Int,
+): Float {
+    if (paragraphCount <= 0) return 0f
+    val first = layoutInfo.visibleItemsInfo.firstOrNull() ?: return 0f
+    // item 0 是章头，段落 item 从 1 开始
+    val paragraph = (first.index - 1).coerceAtLeast(0)
+    return (paragraph.toFloat() / paragraphCount).coerceIn(0f, 1f)
 }

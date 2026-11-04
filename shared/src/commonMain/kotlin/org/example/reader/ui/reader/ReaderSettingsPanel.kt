@@ -157,9 +157,10 @@ fun ReaderSettingsPanel(
             method = settings.method,
             onSelect = { method ->
                 onMethodChange(method)
-                // 上下滚动两种还没做，先明确告知，不让人以为点了没反应
-                if (method == ReadMethod.Scroll || method == ReadMethod.Scroll2) {
-                    onHint("「${method.label}」将在后续接入，当前按上下滑动呈现")
+                // 两种上下滚动的差异只有「已读章是否保留」，而这个差异在界面上表现为
+                // 「能不能往回滚」，不说明的话会被当成滚动失灵（不是缺陷，是语义）。
+                if (method == ReadMethod.Scroll2) {
+                    onHint("上下滚动 2 会隐藏已读章，向上滚不出当前章")
                 }
             },
         )

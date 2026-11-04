@@ -43,6 +43,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -351,18 +352,32 @@ private fun BackgroundRow(selected: Int, onSelect: (Int) -> Unit) {
     }
 }
 
+/**
+ * 双页翻页的最小窗口宽度。
+ *
+ * 与前端 `utils/horizontalPaging.ts` 的 `DUAL_PAGE_MIN_WIDTH = 960` 数值一致，但**单位不同**：
+ * 前端是 CSS px，这里按 Android 的 dp 取。不要因为「前端写 960」就顺手当成 px 换算。
+ */
+private const val DUAL_PAGE_MIN_WIDTH_DP = 960
+
 @Composable
 private fun PageMethodRow(method: ReadMethod, onSelect: (ReadMethod) -> Unit) {
-    // 双页翻页与前端一致：窄屏不可用（前端在 <960px 时禁用），手机端不列出
-    val options = ReadMethod.entries.filter { it != ReadMethod.DualPage }
+    // 与前端一致：双页在窄屏「可见但不可选」，不是从列表里消失——
+    // 隐藏会让人以为本端不支持双页；置灰 + 说明才说明「是设备宽度不够」。
+    // 已存 dual_page 的设备变窄时**不改写 prefs**：宽度恢复后自动回到双页。
+    val widthDp = LocalConfiguration.current.screenWidthDp
+    val dualPageAvailable = widthDp >= DUAL_PAGE_MIN_WIDTH_DP
+    val options = ReadMethod.entries
     Column {
         Text("翻页方式", style = MaterialTheme.typography.labelLarge)
         Spacer(Modifier.height(6.dp))
         SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
             options.forEachIndexed { index, option ->
+                val enabled = option != ReadMethod.DualPage || dualPageAvailable
                 SegmentedButton(
                     selected = option == method,
-                    onClick = { onSelect(option) },
+                    onClick = { if (enabled) onSelect(option) },
+                    enabled = enabled,
                     shape = SegmentedButtonDefaults.itemShape(index = index, count = options.size),
                     label = {
                         Text(
@@ -373,6 +388,15 @@ private fun PageMethodRow(method: ReadMethod, onSelect: (ReadMethod) -> Unit) {
                     },
                 )
             }
+        }
+        if (!dualPageAvailable) {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = "双页翻页需要窗口宽度 ≥${DUAL_PAGE_MIN_WIDTH_DP}dp（当前 ${widthDp}dp）；" +
+                    "已选双页时按左右翻页呈现。",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }

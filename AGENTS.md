@@ -184,7 +184,7 @@ androidApp/        Activity、清单、图标、资源
   顶/底栏、进度条与点按热区保持全宽——不要在容器里各写一套 padding。
   新增排版项必须进 `ReaderSettings`（默认值 + 读盘 clamp），并在
   `ReaderSettingsStoreAndroidHostTest` 补「默认值 / 越界 / 重载 / 脏数据」四类断言。
-  鸿蒙/小米字体不随包分发：仓库根 `fonts/` 存原件，`FontStore` 按需下载到私有目录；
+  小米 MiSans 字体不随包分发：仓库根 `fonts/` 存原件，`FontStore` 按需下载到私有目录；
   解析字体族必须带 `fontPath`（未下载回退系统字族），文件字体族要按路径 memo——
   `Font(File)` 构造就会解析 Typeface，每帧重建会直接掉帧。
 - 翻页模式的正文区域由 `contentIndex`（正文属于哪一章，现为 `body.chapterIndex` 的派生值）把关：

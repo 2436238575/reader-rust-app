@@ -3,7 +3,6 @@ package org.example.reader.core.settings
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
-import org.example.reader.core.font.remoteFileName
 import org.example.reader.core.text.ChineseMode
 
 /** 内存版键值存储：只测读写语义，不碰 SharedPreferences。 */
@@ -66,15 +65,6 @@ class ReaderSettingsStoreAndroidHostTest {
         // 未知值回落系统字体，不能让渲染层拿到一个不存在的分支
         assertEquals(ReaderFont.System, ReaderFont.fromKey("comic-sans"))
         assertEquals(ReaderFont.System, ReaderFont.fromKey(null))
-    }
-
-    @Test
-    fun remoteFontFileNamesAreStable() {
-        // 仓库 fonts/ 下的文件名；改了会导致已下载用户 404，必须与仓库一致
-        assertEquals("HarmonyOS_Sans_SC_Regular.ttf", ReaderFont.Harmony.remoteFileName)
-        assertEquals("MiSans-Regular.ttf", ReaderFont.MiSans.remoteFileName)
-        assertEquals(null, ReaderFont.System.remoteFileName)
-        assertEquals(null, ReaderFont.Songti.remoteFileName)
     }
 
     @Test

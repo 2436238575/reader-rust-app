@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.SegmentedButton
@@ -53,6 +54,7 @@ import androidx.compose.ui.unit.dp
 import org.example.reader.core.settings.AutoPageMode
 import org.example.reader.core.settings.ClickAction
 import org.example.reader.core.settings.ReadMethod
+import org.example.reader.core.font.FontDownloadState
 import org.example.reader.core.settings.ReaderFont
 import org.example.reader.core.text.ChineseMode
 import org.example.reader.core.settings.ReaderSettings
@@ -102,6 +104,10 @@ fun ReaderSettingsPanel(
     onFontFamilyChange: (ReaderFont) -> Unit,
     /** 字重 100..900，步进 100。 */
     onFontWeightChange: (Int) -> Unit,
+    /** 鸿蒙/小米字体的下载状态（进度/失败），系统字族时为 Idle。 */
+    fontDownload: FontDownloadState,
+    onFontRetry: () -> Unit,
+    onFontCancel: () -> Unit,
     /** 正文列宽（dp），步进 50。 */
     onPageWidthChange: (Int) -> Unit,
     /** 章节配图开关（P1-6）：关掉后不再请求配图，正文回到纯文本排版。 */
@@ -168,6 +174,12 @@ fun ReaderSettingsPanel(
         FontFamilyRow(
             font = settings.fontFamily,
             onSelect = onFontFamilyChange,
+        )
+
+        FontDownloadRow(
+            state = fontDownload,
+            onRetry = onFontRetry,
+            onCancel = onFontCancel,
         )
 
         StepperRow(
@@ -390,8 +402,9 @@ private fun FontFamilyRow(font: ReaderFont, onSelect: (ReaderFont) -> Unit) {
         }
         Spacer(Modifier.height(4.dp))
         Text(
-            text = "黑体/宋体/等宽对应系统 sans/serif/mono；鸿蒙、小米首次切换需联网下载" +
-                "（约 8MB，未修改原始字体，仅 Regular，华为/小米免费商用）；楷体、仿宋按宋体呈现。",
+            text = "黑体/宋体/等宽对应系统 sans/serif/mono；鸿蒙、小米按字重联网下载" +
+                "（每个约 8MB，未修改原始字体，华为/小米免费商用，已下载的离线可用）；" +
+                "楷体、仿宋按宋体呈现。",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -529,6 +542,60 @@ private fun ClickActionRow(clickAction: String, onSelect: (String) -> Unit) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
+}
+
+/**
+ * 字体下载状态：进度条 + 百分比 + 取消；失败时给出原因与重试。
+ *
+ * 直连/弱网下 8MB 可能要几十秒甚至失败，没有这块用户只会看到「字体没变」。
+ */
+@Composable
+private fun FontDownloadRow(
+    state: FontDownloadState,
+    onRetry: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    when (state) {
+        FontDownloadState.Idle -> Unit
+        is FontDownloadState.Running -> Column {
+            val fraction = state.fraction
+            LinearProgressIndicator(
+                progress = { fraction ?: 0f },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(4.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = buildString {
+                        append("正在下载 ${state.font.label} ${state.weight} 字重")
+                        if (fraction != null) append(" ${(fraction * 100).toInt()}%")
+                        if (state.total > 0) {
+                            append("（${formatMegabytes(state.downloaded)}/${formatMegabytes(state.total)}）")
+                        }
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = onCancel) { Text("取消") }
+            }
+        }
+
+        is FontDownloadState.Failed -> Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = "字体下载失败：${state.message}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(onClick = onRetry) { Text("重试") }
+        }
+    }
+}
+
+private fun formatMegabytes(bytes: Long): String {
+    val tenths = bytes * 10 / (1024L * 1024L)
+    return "${tenths / 10}.${tenths % 10}MB"
 }
 
 /** 简繁两档：与前端 `chineseMode` 同值，切完立即重排当前章。 */

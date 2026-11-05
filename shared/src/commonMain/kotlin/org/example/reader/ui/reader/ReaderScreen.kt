@@ -104,7 +104,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.example.reader.core.AppDependencies
-import org.example.reader.core.font.remoteFileName
+import org.example.reader.core.font.isDownloadable
 import org.example.reader.core.model.Book
 import org.example.reader.core.model.ChapterBlock
 import org.example.reader.core.model.ImageBlock
@@ -250,23 +250,29 @@ fun ReaderScreen(
         scope.launch { snackbarHostState.showSnackbar(message) }
     }
 
-    // 需要联网下载的字体（鸿蒙/小米）：revision 变化会触发重组，让字体族重新解析
+    // 需要联网下载的字体（鸿蒙/小米）：按「字体 + 字重」缓存，revision 变化触发重组
     val fontRevision by deps.fonts.revision.collectAsStateWithLifecycle()
-    val fontPath = remember(settings.fontFamily, fontRevision) {
-        deps.fonts.cachedPath(settings.fontFamily)
-    }
-    LaunchedEffect(settings.fontFamily, fontRevision) {
+    val fontDownload by deps.fonts.state.collectAsStateWithLifecycle()
+    var fontRetry by remember { mutableStateOf(0) }
+    val fontPath = remember(settings.fontFamily, settings.fontWeight, fontRevision) {
         val font = settings.fontFamily
-        if (font.remoteFileName == null || deps.fonts.cachedPath(font) != null) return@LaunchedEffect
-        hint("正在下载字体（约 8MB）…")
-        val result = deps.fonts.ensure(font)
+        deps.fonts.cachedPath(font, settings.fontWeight)
+            ?: deps.fonts.bestCachedPath(font, settings.fontWeight)
+    }
+    LaunchedEffect(settings.fontFamily, settings.fontWeight, fontRevision, fontRetry) {
+        val font = settings.fontFamily
+        val weight = settings.fontWeight
+        if (!font.isDownloadable || deps.fonts.cachedPath(font, weight) != null) {
+            return@LaunchedEffect
+        }
+        val result = deps.fonts.ensure(font, weight)
         if (result.isSuccess) {
             // 后台预解析 Typeface，避免下载完成后第一次重组在主线程解析 8MB 字体
             withContext(Dispatchers.Default) {
-                font.toFontFamily(deps.fonts.cachedPath(font))
+                font.toFontFamily(deps.fonts.cachedPath(font, weight))
             }
         } else {
-            hint("字体下载失败，暂用系统字体：${result.exceptionOrNull()?.message ?: "未知错误"}")
+            hint("字体下载失败，可在设置里重试：${result.exceptionOrNull()?.message ?: "未知错误"}")
         }
     }
 
@@ -787,6 +793,12 @@ fun ReaderScreen(
                             onLineHeightChange = deps.readerSettings::setLineHeight,
                             onParagraphSpacingChange = deps.readerSettings::setParagraphSpacing,
                             onFontFamilyChange = deps.readerSettings::setFontFamily,
+                            fontDownload = fontDownload,
+                            onFontRetry = {
+                                deps.fonts.clearFailure()
+                                fontRetry += 1
+                            },
+                            onFontCancel = deps.fonts::cancel,
                             onFontWeightChange = deps.readerSettings::setFontWeight,
                             onPageWidthChange = deps.readerSettings::setPageWidth,
                             onShowChapterImagesChange = deps.readerSettings::setShowChapterImages,

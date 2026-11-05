@@ -89,6 +89,13 @@ data class ReaderSettings(
     val pageSpeed: Int = DEFAULT_PAGE_SPEED,
     /** 点按正文的行为，取值见 [ClickAction]。 */
     val clickAction: String = ClickAction.AUTO,
+    /**
+     * 是否显示章节配图（P1-6）。
+     *
+     * 关掉后**不请求**配图接口（不是拉到图再隐藏）：书源配图接口每章都是一次上游请求，
+     * 纯文本读者不该为它付流量。默认值照抄前端 `showChapterImages: true`。
+     */
+    val showChapterImages: Boolean = true,
 ) {
     companion object {
         const val DEFAULT_FONT_SIZE = 18
@@ -186,6 +193,9 @@ class ReaderSettingsStore(private val store: KeyValueStore) {
 
     fun setClickAction(value: String) = update { it.copy(clickAction = ClickAction.normalize(value)) }
 
+    /** 章节配图开关：改动后由阅读器重建当前章正文（关掉即回到纯文本排版）。 */
+    fun setShowChapterImages(enabled: Boolean) = update { it.copy(showChapterImages = enabled) }
+
     /**
      * 切换自动阅读的滚动方式（像素 / 段落）。
      *
@@ -252,6 +262,7 @@ class ReaderSettingsStore(private val store: KeyValueStore) {
         store.putInt(SettingsKeys.READER_SCROLL_PIXEL, next.scrollPixel)
         store.putInt(SettingsKeys.READER_PAGE_SPEED, next.pageSpeed)
         store.putString(SettingsKeys.READER_CLICK_ACTION, next.clickAction)
+        store.putBoolean(SettingsKeys.READER_SHOW_CHAPTER_IMAGES, next.showChapterImages)
     }
 
     /**
@@ -296,6 +307,7 @@ class ReaderSettingsStore(private val store: KeyValueStore) {
             pageSpeed = store
                 .getInt(SettingsKeys.READER_PAGE_SPEED, ReaderSettings.DEFAULT_PAGE_SPEED)
                 .coerceIn(ReaderSettings.MIN_PAGE_SPEED, ReaderSettings.MAX_PAGE_SPEED),
+            showChapterImages = store.getBoolean(SettingsKeys.READER_SHOW_CHAPTER_IMAGES, true),
         )
     }
 }

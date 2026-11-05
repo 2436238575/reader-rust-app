@@ -3,6 +3,7 @@ package org.example.reader.ui.reader
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import org.example.reader.core.model.ImageBlock
 import org.example.reader.core.model.TextBlock
 
 class ContinuousBlockAndroidHostTest {
@@ -11,12 +12,32 @@ class ContinuousBlockAndroidHostTest {
     fun bodyKeyComesFromChapterAndBlockIndexWithoutStringPayload() {
         val body = ContinuousItem.Body(
             chapter = 4,
+            blockIndex = 7,
             block = TextBlock(paraIndex = 7, text = "正文可任意变化", spans = emptyList()),
         )
 
         assertEquals("p:4:7", body.key)
-        assertEquals(7, body.paragraphIndex)
         assertEquals("正文可任意变化", (body.block as TextBlock).text)
+    }
+
+    @Test
+    fun imageAndFollowingParagraphDoNotShareAKey() {
+        // 配图锚点与紧随其后的文本块 paraIndex 相同，key 必须用块列表下标，
+        // 否则连续列表会抛 "Key p:4:100 was already used"
+        val image = ContinuousItem.Body(
+            chapter = 4,
+            blockIndex = 100,
+            block = ImageBlock(paraIndex = 100, url = "u"),
+        )
+        val text = ContinuousItem.Body(
+            chapter = 4,
+            blockIndex = 101,
+            block = TextBlock(paraIndex = 100, text = "小橙", spans = emptyList()),
+        )
+
+        assertEquals("p:4:100", image.key)
+        assertEquals("p:4:101", text.key)
+        assertEquals(100, text.block.paraIndex)
     }
 
     @Test

@@ -91,6 +91,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil3.ImageLoader
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.CancellationException
@@ -102,6 +103,8 @@ import kotlinx.coroutines.launch
 import org.example.reader.core.AppDependencies
 import org.example.reader.core.model.Book
 import org.example.reader.core.model.ChapterBlock
+import org.example.reader.core.model.ImageBlock
+import org.example.reader.core.model.TextBlock
 import org.example.reader.core.platform.ApplyWindowBrightness
 import org.example.reader.core.platform.rememberSystemBrightness
 import org.example.reader.core.settings.AutoPageMode
@@ -136,10 +139,40 @@ private data class SingleChapterRestoreKey(
  */
 private data class SingleChapterContentKey(
     val chapterIndex: Int,
-    val blocks: List<ChapterBlock>,
+    val layout: BlockLayout,
     val horizontalMode: Boolean,
     val continuousMode: Boolean,
 )
+
+/**
+ * 块列表的**版式身份**：文本比文字，图片比锚点/尺寸/说明，**不比 URL**。
+ *
+ * 刷新本章会重新求值配图接口，签名地址每次都变（`x-signature`），但版面完全一样。
+ * 若把 URL 算进签名，每次刷新都会被判成「内容变了」→ 重新 scrollToItem，
+ * 正好把 96cfd46 修掉的「刷新上跳」重新引回来。图片尺寸变了（书源换了图）仍算变化。
+ */
+private class BlockLayout(val blocks: List<ChapterBlock>) {
+    override fun equals(other: Any?): Boolean {
+        if (other !is BlockLayout || blocks.size != other.blocks.size) return false
+        for (index in blocks.indices) {
+            val left = blocks[index]
+            val right = other.blocks[index]
+            val same = when {
+                left is TextBlock && right is TextBlock -> left.text == right.text
+                left is ImageBlock && right is ImageBlock ->
+                    left.paraIndex == right.paraIndex &&
+                        left.width == right.width &&
+                        left.height == right.height &&
+                        left.caption == right.caption
+                else -> false
+            }
+            if (!same) return false
+        }
+        return true
+    }
+
+    override fun hashCode(): Int = blocks.size * 31 + (blocks.lastOrNull()?.paraIndex ?: 0)
+}
 
 /**
  * 阅读器。
@@ -191,6 +224,15 @@ fun ReaderScreen(
     var autoReading by rememberSaveable { mutableStateOf(false) }
     var activePanel by remember { mutableStateOf<ReaderPanel?>(null) }
     var moreMenuExpanded by remember { mutableStateOf(false) }
+    // 图片灯箱（P1-9 L5）：独占一层，打开前先清掉控件与所有面板/菜单。
+    var lightboxUrl by remember { mutableStateOf<String?>(null) }
+    val openImage: (String) -> Unit = { url ->
+        controlsVisible = false
+        showCatalog = false
+        activePanel = null
+        moreMenuExpanded = false
+        lightboxUrl = url
+    }
 
     // 暗色正文配浅色系统栏图标，离开阅读器时恢复应用主题
     SystemBarsAppearance(lightContent = palette.isDark, restoreContent = isSystemInDarkTheme())
@@ -205,6 +247,15 @@ fun ReaderScreen(
     }
 
     LaunchedEffect(startIndex) { viewModel.applyStartIndex(startIndex) }
+
+    // 配图开关：改动后当场重建当前章（关掉不发请求，打开最多等一次配图请求）。
+    // 首帧不触发——那不是「改动」，只是进入阅读器时读到的现值。
+    var lastShowImages by remember { mutableStateOf(settings.showChapterImages) }
+    LaunchedEffect(settings.showChapterImages) {
+        if (lastShowImages == settings.showChapterImages) return@LaunchedEffect
+        lastShowImages = settings.showChapterImages
+        viewModel.onShowChapterImagesChanged()
+    }
 
     // 加载/刷新失败的可见提示。
     // 正文区末尾虽然也有一个 error item，但读到 85% 处刷新失败时它落在屏幕外，
@@ -262,7 +313,7 @@ fun ReaderScreen(
         if (state.contentIndex != state.currentIndex) return@LaunchedEffect
         val contentKey = SingleChapterContentKey(
             chapterIndex = state.currentIndex,
-            blocks = state.blocks,
+            layout = BlockLayout(state.blocks),
             horizontalMode = horizontalMode,
             continuousMode = continuousMode,
         )
@@ -460,9 +511,10 @@ fun ReaderScreen(
         onDispose { viewModel.flushProgress() }
     }
 
-    // 返回键：先关目录 → 再关面板 → 再收控件 → 最后才退出阅读器
+    // 返回键：先关灯箱 → 再关目录 → 再关面板 → 再收控件 → 最后才退出阅读器
     AppBackHandler {
         when {
+            lightboxUrl != null -> lightboxUrl = null
             showCatalog -> showCatalog = false
             activePanel != null -> activePanel = null
             controlsVisible -> controlsVisible = false
@@ -508,6 +560,8 @@ fun ReaderScreen(
                     state = state,
                     settings = settings,
                     palette = palette,
+                    imageLoader = deps.imageLoader,
+                    onImageClick = openImage,
                     onPrevChapter = viewModel::prevChapter,
                     onNextChapter = viewModel::nextChapter,
                     onToggleControls = { controlsVisible = !controlsVisible },
@@ -524,6 +578,8 @@ fun ReaderScreen(
                     palette = palette,
                     viewModel = viewModel,
                     listState = listState,
+                    imageLoader = deps.imageLoader,
+                    onImageClick = openImage,
                     onToggleControls = { controlsVisible = !controlsVisible },
                     restoreFraction = restoreFraction,
                     hideReadChapters = settings.method == ReadMethod.Scroll2,
@@ -535,6 +591,8 @@ fun ReaderScreen(
                     settings = settings,
                     palette = palette,
                     listState = listState,
+                    imageLoader = deps.imageLoader,
+                    onImageClick = openImage,
                     onPrev = viewModel::prevChapter,
                     onNext = viewModel::nextChapter,
                     modifier = verticalTapModifier,
@@ -622,6 +680,15 @@ fun ReaderScreen(
                 .navigationBarsPadding()
                 .padding(bottom = 200.dp),
         )
+
+        // L5 图片灯箱：盖住正文与控件（sheet 是独立窗口，打开前已被 openImage 清掉）。
+        lightboxUrl?.let { url ->
+            ImageLightbox(
+                url = url,
+                imageLoader = deps.imageLoader,
+                onClose = { lightboxUrl = null },
+            )
+        }
     }
 
     activePanel?.let { panel ->
@@ -689,6 +756,7 @@ fun ReaderScreen(
                             onEyeCareChange = deps.readerSettings::setEyeCare,
                             onLineHeightChange = deps.readerSettings::setLineHeight,
                             onParagraphSpacingChange = deps.readerSettings::setParagraphSpacing,
+                            onShowChapterImagesChange = deps.readerSettings::setShowChapterImages,
                             // 自动阅读（P1-8）：面板只配「怎么滚」，开关仍在底栏
                             onClickActionChange = deps.readerSettings::setClickAction,
                             onAutoPageModeChange = deps.readerSettings::setAutoPageMode,
@@ -702,6 +770,8 @@ fun ReaderScreen(
             }
         }
     }
+
+    // 灯箱已在 Box 内绘制（L5）；返回键由上面的层级统一先关它。
 }
 
 @Composable
@@ -710,6 +780,8 @@ private fun ReaderContent(
     settings: ReaderSettings,
     palette: ReaderPalette,
     listState: androidx.compose.foundation.lazy.LazyListState,
+    imageLoader: ImageLoader,
+    onImageClick: (String) -> Unit,
     onPrev: () -> Unit,
     onNext: () -> Unit,
     modifier: Modifier = Modifier,
@@ -762,7 +834,12 @@ private fun ReaderContent(
             )
         }
         itemsIndexed(state.blocks) { _, block ->
-            ChapterBlockContent(block = block, bodyStyle = bodyStyle)
+            ChapterBlockContent(
+                block = block,
+                bodyStyle = bodyStyle,
+                imageLoader = imageLoader,
+                onImageClick = onImageClick,
+            )
         }
         if (state.isLoadingContent) {
             item { LinearProgressIndicator(Modifier.fillMaxWidth()) }

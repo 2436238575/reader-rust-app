@@ -15,10 +15,21 @@ data class TextBlock(
     val spans: List<TextSpan>,
 ) : ChapterBlock
 
-/** 图片块模型；本轮只定义数据，不启用测量或渲染。 */
+/**
+ * 章节配图块。
+ *
+ * [paraIndex] 指向**紧随其后的那个文本块**（章末图等于块数），因此它可能与相邻
+ * 文本块的 `paraIndex` 相同——这是锚点身份，不是列表下标。列表下标由块在
+ * `blocks` 里的位置决定，进度与分页用列表下标，定位用 `paraIndex`。
+ */
 data class ImageBlock(
     override val paraIndex: Int,
     val url: String,
+    /** 图片下方的说明文字，可为空。 */
+    val caption: String = "",
+    /** 原始像素宽高，用于占位与等比缩放；任一项非正数按未知比例处理。 */
+    val width: Int = 0,
+    val height: Int = 0,
 ) : ChapterBlock
 
 /** 评论锚点：指向同下标目标块，不占正文块序号、块数、页或列表 key。 */

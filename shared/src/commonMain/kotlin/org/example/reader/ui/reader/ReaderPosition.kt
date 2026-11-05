@@ -45,7 +45,7 @@ internal class HorizontalRestoreSession(initialFraction: Float) {
         val pageIndex = pageForBlock(pages, restoreBlock(totalBlocks))
         val normalizedFraction = if (anchorFraction == 1f && totalBlocks > 0) {
             pages.getOrNull(pageIndex)?.let { page ->
-                blockFraction(page.startParaIndex, totalBlocks)
+                blockFraction(page.startBlockIndex, totalBlocks)
             }
         } else {
             null

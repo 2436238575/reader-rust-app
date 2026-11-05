@@ -92,6 +92,13 @@ data class ChapterContentRequest(
     val knownVersionId: Long? = null,
 )
 
+/** 章节配图：后端按 `bookId` 找书源规则、按 `chapterUrl` 取正文再求值配图接口。 */
+@Serializable
+data class ChapterImageRequest(
+    val bookId: String,
+    val chapterUrl: String,
+)
+
 /** 批量取正文的单章：字段名对齐后端 `BatchContentChapter`（`chapterUrl` 不是 `url`）。 */
 @Serializable
 data class BatchContentChapterRequest(

@@ -33,6 +33,7 @@ import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -95,6 +96,8 @@ fun ReaderSettingsPanel(
     onEyeCareChange: (Boolean) -> Unit,
     onLineHeightChange: (Float) -> Unit,
     onParagraphSpacingChange: (Float) -> Unit,
+    /** 章节配图开关（P1-6）：关掉后不再请求配图，正文回到纯文本排版。 */
+    onShowChapterImagesChange: (Boolean) -> Unit,
     /**
      * 自动阅读（P1-8）三个回调。
      *
@@ -168,6 +171,11 @@ fun ReaderSettingsPanel(
         ClickActionRow(
             clickAction = settings.clickAction,
             onSelect = onClickActionChange,
+        )
+
+        ImageToggleRow(
+            checked = settings.showChapterImages,
+            onChange = onShowChapterImagesChange,
         )
 
         MiscRow(
@@ -437,6 +445,24 @@ private fun ClickActionRow(clickAction: String, onSelect: (String) -> Unit) {
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+    }
+}
+
+@Composable
+private fun ImageToggleRow(
+    checked: Boolean,
+    onChange: (Boolean) -> Unit,
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text("章节配图", style = MaterialTheme.typography.labelLarge)
+            Text(
+                text = "关闭后不请求配图，按纯文本排版",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Switch(checked = checked, onCheckedChange = onChange)
     }
 }
 

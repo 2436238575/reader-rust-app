@@ -56,9 +56,9 @@ class ReaderPositionAndroidHostTest {
     @Test
     fun horizontalRestoreTargetsPageContainingLogicalBlock() {
         val pages = listOf(
-            ReaderPage(blocks = textBlocks(0, 2), showTitle = true, startParaIndex = 0),
-            ReaderPage(blocks = textBlocks(2, 2), showTitle = false, startParaIndex = 2),
-            ReaderPage(blocks = textBlocks(4, 1), showTitle = false, startParaIndex = 4),
+            ReaderPage(blocks = textBlocks(0, 2), showTitle = true, startBlockIndex = 0),
+            ReaderPage(blocks = textBlocks(2, 2), showTitle = false, startBlockIndex = 2),
+            ReaderPage(blocks = textBlocks(4, 1), showTitle = false, startBlockIndex = 4),
         )
 
         assertEquals(2, pageForBlock(pages, blockAtFraction(0.8f, 5)))
@@ -71,19 +71,19 @@ class ReaderPositionAndroidHostTest {
         val session = HorizontalRestoreSession(blockFraction(40, 100))
         val generations = listOf(
             listOf(
-                ReaderPage(textBlocks(0, 32), showTitle = true, startParaIndex = 0),
-                ReaderPage(textBlocks(32, 18), showTitle = false, startParaIndex = 32),
-                ReaderPage(textBlocks(50, 50), showTitle = false, startParaIndex = 50),
+                ReaderPage(textBlocks(0, 32), showTitle = true, startBlockIndex = 0),
+                ReaderPage(textBlocks(32, 18), showTitle = false, startBlockIndex = 32),
+                ReaderPage(textBlocks(50, 50), showTitle = false, startBlockIndex = 50),
             ),
             listOf(
-                ReaderPage(textBlocks(0, 30), showTitle = true, startParaIndex = 0),
-                ReaderPage(textBlocks(30, 15), showTitle = false, startParaIndex = 30),
-                ReaderPage(textBlocks(45, 55), showTitle = false, startParaIndex = 45),
+                ReaderPage(textBlocks(0, 30), showTitle = true, startBlockIndex = 0),
+                ReaderPage(textBlocks(30, 15), showTitle = false, startBlockIndex = 30),
+                ReaderPage(textBlocks(45, 55), showTitle = false, startBlockIndex = 45),
             ),
             listOf(
-                ReaderPage(textBlocks(0, 20), showTitle = true, startParaIndex = 0),
-                ReaderPage(textBlocks(20, 25), showTitle = false, startParaIndex = 20),
-                ReaderPage(textBlocks(45, 55), showTitle = false, startParaIndex = 45),
+                ReaderPage(textBlocks(0, 20), showTitle = true, startBlockIndex = 0),
+                ReaderPage(textBlocks(20, 25), showTitle = false, startBlockIndex = 20),
+                ReaderPage(textBlocks(45, 55), showTitle = false, startBlockIndex = 45),
             ),
         )
 
@@ -111,8 +111,8 @@ class ReaderPositionAndroidHostTest {
     fun chapterEndRestoreNormalizesOnceAndNewAnchorDrivesLaterReflow() {
         val session = HorizontalRestoreSession(1f)
         val firstLayout = listOf(
-            ReaderPage(textBlocks(0, 80), showTitle = true, startParaIndex = 0),
-            ReaderPage(textBlocks(80, 20), showTitle = false, startParaIndex = 80),
+            ReaderPage(textBlocks(0, 80), showTitle = true, startBlockIndex = 0),
+            ReaderPage(textBlocks(80, 20), showTitle = false, startBlockIndex = 80),
         )
 
         val chapterEnd = session.restoreTarget(firstLayout, totalBlocks = 100)
@@ -125,9 +125,9 @@ class ReaderPositionAndroidHostTest {
         assertEquals(0.8f, session.anchorFraction)
 
         val nextLayout = listOf(
-            ReaderPage(textBlocks(0, 70), showTitle = true, startParaIndex = 0),
-            ReaderPage(textBlocks(70, 15), showTitle = false, startParaIndex = 70),
-            ReaderPage(textBlocks(85, 15), showTitle = false, startParaIndex = 85),
+            ReaderPage(textBlocks(0, 70), showTitle = true, startBlockIndex = 0),
+            ReaderPage(textBlocks(70, 15), showTitle = false, startBlockIndex = 70),
+            ReaderPage(textBlocks(85, 15), showTitle = false, startBlockIndex = 85),
         )
         val reflow = session.restoreTarget(nextLayout, totalBlocks = 100)
         assertEquals(1, reflow.pageIndex)
@@ -140,9 +140,9 @@ class ReaderPositionAndroidHostTest {
         val original = 0.4f
         val session = HorizontalRestoreSession(original)
         val pages = listOf(
-            ReaderPage(textBlocks(0, 32), showTitle = true, startParaIndex = 0),
-            ReaderPage(textBlocks(32, 18), showTitle = false, startParaIndex = 32),
-            ReaderPage(textBlocks(50, 50), showTitle = false, startParaIndex = 50),
+            ReaderPage(textBlocks(0, 32), showTitle = true, startBlockIndex = 0),
+            ReaderPage(textBlocks(32, 18), showTitle = false, startBlockIndex = 32),
+            ReaderPage(textBlocks(50, 50), showTitle = false, startBlockIndex = 50),
         )
 
         val restore = session.restoreTarget(pages, totalBlocks = 100)
@@ -158,9 +158,9 @@ class ReaderPositionAndroidHostTest {
         val scroll9091 = 0.9091f
         val session = HorizontalRestoreSession(scroll9091)
         val pages = listOf(
-            ReaderPage(textBlocks(0, 85), showTitle = true, startParaIndex = 0),
-            ReaderPage(textBlocks(85, 15), showTitle = false, startParaIndex = 85),
-            ReaderPage(textBlocks(100, 10), showTitle = false, startParaIndex = 100),
+            ReaderPage(textBlocks(0, 85), showTitle = true, startBlockIndex = 0),
+            ReaderPage(textBlocks(85, 15), showTitle = false, startBlockIndex = 85),
+            ReaderPage(textBlocks(100, 10), showTitle = false, startBlockIndex = 100),
         )
 
         val restore = session.restoreTarget(pages, totalBlocks = 110)
@@ -194,8 +194,8 @@ class ReaderPositionAndroidHostTest {
 
             val session = HorizontalRestoreSession(horizontalFraction)
             val firstLayout = listOf(
-                ReaderPage(textBlocks(0, 90), showTitle = true, startParaIndex = 0),
-                ReaderPage(textBlocks(90, 7), showTitle = false, startParaIndex = 90),
+                ReaderPage(textBlocks(0, 90), showTitle = true, startBlockIndex = 0),
+                ReaderPage(textBlocks(90, 7), showTitle = false, startBlockIndex = 90),
             )
             val chapterEnd = session.restoreTarget(firstLayout, total)
             assertEquals(1, chapterEnd.pageIndex)
@@ -208,9 +208,9 @@ class ReaderPositionAndroidHostTest {
             // 后续重排仍以真实页首块90为锚，不重复归一，也不漂到末块96。
             val reflow = session.restoreTarget(
                 pages = listOf(
-                    ReaderPage(textBlocks(0, 70), showTitle = true, startParaIndex = 0),
-                    ReaderPage(textBlocks(70, 20), showTitle = false, startParaIndex = 70),
-                    ReaderPage(textBlocks(90, 7), showTitle = false, startParaIndex = 90),
+                    ReaderPage(textBlocks(0, 70), showTitle = true, startBlockIndex = 0),
+                    ReaderPage(textBlocks(70, 20), showTitle = false, startBlockIndex = 70),
+                    ReaderPage(textBlocks(90, 7), showTitle = false, startBlockIndex = 90),
                 ),
                 totalBlocks = total,
             )
@@ -234,8 +234,8 @@ class ReaderPositionAndroidHostTest {
     fun ordinaryContinuousPositionsIncludingNaturalLastBlockNeverNormalizeAsChapterEnd() {
         val total = 97
         val pages = listOf(
-            ReaderPage(textBlocks(0, 90), showTitle = true, startParaIndex = 0),
-            ReaderPage(textBlocks(90, 7), showTitle = false, startParaIndex = 90),
+            ReaderPage(textBlocks(0, 90), showTitle = true, startBlockIndex = 0),
+            ReaderPage(textBlocks(90, 7), showTitle = false, startBlockIndex = 90),
         )
 
         listOf(0.4f, 0.9091f, blockFraction(96, total)).forEach { visibleFraction ->

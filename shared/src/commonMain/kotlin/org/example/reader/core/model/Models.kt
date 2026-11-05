@@ -219,6 +219,33 @@ data class ChapterContent(
     val unchanged: Boolean = false,
 )
 
+/**
+ * 章节配图。
+ *
+ * [paraIndex] 是**正文按 `\n` 切分的原始行号**（插在该行之前），与正文块下标不是一回事：
+ * 空行会被 `ChapterBlockBuilder` 过滤掉，映射由构建器统一做。`null` 表示取不到位置，排章末。
+ */
+@Serializable
+data class ChapterImageInfo(
+    val url: String = "",
+    val caption: String = "",
+    @SerialName("paraIndex") val paraIndex: Int? = null,
+    val width: Int = 0,
+    val height: Int = 0,
+)
+
+/**
+ * 一章的配图列表。
+ *
+ * `enabled=false` 表示**书源没有声明配图规则**，不是「这一章没图」；前端据此决定
+ * 还要不要继续请求。`enabled=true` + 空列表才是「这一章没有配图」。
+ */
+@Serializable
+data class ChapterImages(
+    val enabled: Boolean = false,
+    val images: List<ChapterImageInfo> = emptyList(),
+)
+
 /** 批量取正文里单章的结果：某章失败只写 `error`，不影响其他章节。 */
 @Serializable
 data class BatchChapterContent(

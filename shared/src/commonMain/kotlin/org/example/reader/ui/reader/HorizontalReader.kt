@@ -37,6 +37,7 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil3.ImageLoader
 import kotlinx.coroutines.launch
 import org.example.reader.core.settings.ClickAction
 import org.example.reader.core.settings.ReaderSettings
@@ -65,6 +66,8 @@ fun HorizontalReader(
     state: ReaderUiState,
     settings: ReaderSettings,
     palette: ReaderPalette,
+    imageLoader: ImageLoader,
+    onImageClick: (String) -> Unit,
     onPrevChapter: () -> Unit,
     onNextChapter: () -> Unit,
     onToggleControls: () -> Unit,
@@ -108,6 +111,7 @@ fun HorizontalReader(
         val heightPx = with(density) { (maxHeight - vertical * 2).roundToPx() }
         val gapPx = lineMetrics.paragraphGapPx(density)
         val gapDp = lineMetrics.paragraphGapDp(density)
+        val captionGapPx = with(density) { IMAGE_CAPTION_GAP_DP.dp.roundToPx() }
         val snapshot = state.body
         val layoutGeneration = snapshot?.let {
             HorizontalLayoutGeneration(
@@ -138,7 +142,7 @@ fun HorizontalReader(
                     heightPx = heightPx,
                     gapPx = gapPx,
                 ) { block ->
-                    measureChapterBlock(measurer, block, bodyStyle, widthPx)
+                    measureChapterBlock(measurer, block, bodyStyle, widthPx, captionGapPx)
                 }
             }
         }
@@ -184,6 +188,8 @@ fun HorizontalReader(
                     state = state,
                     clickAction = settings.clickAction,
                     palette = palette,
+                    imageLoader = imageLoader,
+                    onImageClick = onImageClick,
                     titleStyle = titleStyle,
                     bodyStyle = bodyStyle,
                     gapDp = gapDp,
@@ -219,6 +225,8 @@ private fun PagedContent(
     state: ReaderUiState,
     clickAction: String,
     palette: ReaderPalette,
+    imageLoader: ImageLoader,
+    onImageClick: (String) -> Unit,
     titleStyle: TextStyle,
     bodyStyle: TextStyle,
     gapDp: Dp,
@@ -256,7 +264,7 @@ private fun PagedContent(
     // 翻页即进度：按本页**页首**段落对应的比例，与恢复时是同一个端点。
     //
     // 这里必须与 [blockFraction] / [blockAtFraction] 的映射严格互逆：
-    // 旧实现上报页尾（`startParaIndex + blocks.size`）、恢复却按页首落页，
+    // 旧实现上报页尾（`startBlockIndex + blocks.size`）、恢复却按页首落页，
     // 于是「退出 → 重进」每次都前进一页（A4，末页除外的假象来自末页没有下一页可进）。
     // scrollToPage 完成前，PagerState 默认的 currentPage == 0 不是真实阅读位置，
     // 必须整体屏蔽；落在恢复目标页也不上报。只有翻离已稳定页才代表真实阅读位移。
@@ -268,7 +276,7 @@ private fun PagedContent(
             val total = state.blocks.size
             if (total > 0) {
                 settledPage = index
-                onProgress(restoreSession.onUserPage(page.startParaIndex, total))
+                onProgress(restoreSession.onUserPage(page.startBlockIndex, total))
             }
         }
     }
@@ -316,7 +324,12 @@ private fun PagedContent(
                 )
             }
             page.blocks.forEach { block ->
-                ChapterBlockContent(block = block, bodyStyle = bodyStyle)
+                ChapterBlockContent(
+                    block = block,
+                    bodyStyle = bodyStyle,
+                    imageLoader = imageLoader,
+                    onImageClick = onImageClick,
+                )
             }
         }
     }

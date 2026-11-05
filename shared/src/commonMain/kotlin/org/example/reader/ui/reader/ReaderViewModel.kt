@@ -10,12 +10,15 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import org.example.reader.core.AppDependencies
 import org.example.reader.core.model.Book
 import org.example.reader.core.model.BookChapter
 import org.example.reader.core.model.ChapterBlockBuilder
 import org.example.reader.core.model.ChapterContent
+import org.example.reader.core.model.ChapterImageInfo
 import org.example.reader.core.net.ApiResult
 import org.example.reader.core.util.nowMillis
 import kotlin.math.roundToInt
@@ -97,6 +100,22 @@ class ReaderViewModel(
 
     /** 正在预取的目录下标，避免同一章重复请求。 */
     private val prefetching = mutableSetOf<Int>()
+
+    /**
+     * 配图缓存：目录下标 → 本章图片（访问序，与正文同命）。
+     *
+     * **不跨刷新复用**：配图地址带时效签名，`refreshChapter` 必须重新求值。
+     * 也不跨书复用——`ReaderViewModel` 本身按 `bookId` 隔离，换书即重建。
+     */
+    private val imageCache = LinkedHashMap<Int, List<ChapterImageInfo>>(16, 0.75f, true)
+
+    /**
+     * 书源没有声明配图规则（接口回 `enabled=false`）。
+     *
+     * 这是**书源级**事实，不是「这一章没图」，所以整个会话只认一次：
+     * 否则每翻一章都要为一个必然为空的接口付一次上游请求。
+     */
+    private var imageRuleDisabled = false
 
     /**
      * 连续阅读在途的单章请求：目录下标 → 结果通知。
@@ -211,25 +230,51 @@ class ReaderViewModel(
             val cached = contentCache[index]
             if (cached != null) {
                 // 访问序 Map：上面这次 get 已把该章挪到队尾，命中即刷新 LRU 顺序
-                applyContent(index, chapter, cached, restore)
-                prefetchNeighbors(index)
+                // 关掉配图时即使缓存里还有旧图也不能用——开关的语义是「正文里不要图片块」
+                if (!imagesWanted()) {
+                    applyContent(index, chapter, cached, restore, emptyList())
+                    prefetchNeighbors(index)
+                    return
+                }
+                val imagesReady = imageCache[index]
+                if (imagesReady != null) {
+                    applyContent(index, chapter, cached, restore, imagesReady)
+                    prefetchNeighbors(index)
+                    return
+                }
+                // 正文命中但配图还没取过：配图是正文的一部分（块列表里占位），
+                // 必须先取到再发布，否则会出现「先纯文本、再整体下移一张图」的重排。
+                viewModelScope.launch {
+                    val images = fetchChapterImages(index, chapter, force = false)
+                    if (gen != generation || index != _state.value.currentIndex) return@launch
+                    applyContent(index, chapter, cached, restore, images)
+                    prefetchNeighbors(index)
+                }
                 return
             }
         }
 
         viewModelScope.launch {
-            val result = deps.api.getBookContent(
-                bookId = bookId,
-                chapterUrl = chapter.url,
-                index = chapter.index,
-            )
+            // 正文与配图并行：配图接口只需要 chapterUrl，不依赖正文响应。
+            // 配图有独立超时（见 fetchChapterImages），慢也不会把正文拖住太久。
+            val contentResult = async {
+                deps.api.getBookContent(
+                    bookId = bookId,
+                    chapterUrl = chapter.url,
+                    index = chapter.index,
+                )
+            }
+            val imagesResult = async {
+                if (imagesWanted()) fetchChapterImages(index, chapter, force) else emptyList()
+            }
+            val result = contentResult.await()
             // 代际校验必须落在协程内、写任何状态之前：
             // 期间用户又换了章的话，这条迟到的结果整条丢弃，否则会出现「新章标题 + 旧章正文」
             if (gen != generation || index != _state.value.currentIndex) return@launch
             when (result) {
                 is ApiResult.Success -> {
                     remember(index, result.value)
-                    applyContent(index, chapter, result.value, restore)
+                    applyContent(index, chapter, result.value, restore, imagesResult.await())
                     prefetchNeighbors(index)
                 }
 
@@ -286,12 +331,13 @@ class ReaderViewModel(
         chapter: BookChapter,
         content: ChapterContent,
         restoreFraction: Float,
+        images: List<ChapterImageInfo> = emptyList(),
     ) {
         if (index != _state.value.currentIndex) return
         val snapshot = ChapterBlockSnapshot(
             chapterIndex = index,
             source = content,
-            blocks = ChapterBlockBuilder.build(content),
+            blocks = ChapterBlockBuilder.build(content, images),
             revision = generation,
         )
         val restore = restoreFraction.coerceIn(0f, 1f)
@@ -325,6 +371,107 @@ class ReaderViewModel(
         persistProgress(index, restore)
     }
 
+    // ─── 配图（P1-6） ──────────────────────────────────────────────────────────
+
+    /**
+     * 当前是否值得去取配图：开关打开、书源支持，且没有因为「规则缺失」被本会话禁用。
+     *
+     * 关掉开关时**一个请求都不发**（不是拉回来再隐藏）：配图接口每章都要回源一次。
+     */
+    private fun imagesWanted(): Boolean =
+        deps.readerSettings.state.value.showChapterImages && !imageRuleDisabled
+
+    /**
+     * 取一章配图（缓存优先）。
+     *
+     * 失败与超时一律当作「本章没有配图」：配图是增强，不能挡住正文，也不弹错误。
+     * 失败**不进缓存**，下次进章会重试。
+     *
+     * `force`（刷新本章）会绕过缓存重新求值（图片地址带时效签名），但**失败时回退到
+     * 上一次的地址**而不是当作无图：刷新正文多半只是为了拿新正文，配图接口偶发 5xx
+     * 时把图片撤掉会让整章块列表变化一次，正文跟着重排、位置跳一段——用户只看到
+     * 「刷新后图片没了、人也换了个位置」。旧地址可能已过期，那只是图片占位失败，
+     * 比正文跳位轻得多。
+     */
+    private suspend fun fetchChapterImages(
+        index: Int,
+        chapter: BookChapter,
+        force: Boolean,
+    ): List<ChapterImageInfo> {
+        if (!imagesWanted()) return emptyList()
+        val cached = imageCache[index]
+        if (cached != null && !force) return cached
+        val result = withTimeoutOrNull(IMAGE_TIMEOUT_MS) {
+            deps.api.getChapterImages(bookId = bookId, chapterUrl = chapter.url)
+        } ?: return cached.orEmpty()
+        val images = when (result) {
+            is ApiResult.Success -> {
+                if (!result.value.enabled) {
+                    // 书源级事实：本会话不必再问第二次
+                    imageRuleDisabled = true
+                    return emptyList()
+                }
+                // 后端把配图收口成 `/reader3/image/<id>`（相对路径），Coil 只认绝对地址；
+                // 与封面共用同一个 resolveResource，服务地址改了也不用各改一处。
+                val config = deps.session.serverConfig.value
+                result.value.images
+                    .filter { it.url.isNotBlank() }
+                    .map { image ->
+                        if (config == null) image else image.copy(url = config.resolveResource(image.url))
+                    }
+            }
+
+            is ApiResult.Failure -> return cached.orEmpty()
+        }
+        imageCache[index] = images
+        trimImageCache()
+        return images
+    }
+
+    /** 配图缓存按访问序裁剪；当前章钉住，与正文同一套规则。 */
+    private fun trimImageCache() {
+        while (imageCache.size > CONTENT_CACHE_SIZE) {
+            val current = _state.value.currentIndex
+            val victim = imageCache.keys.firstOrNull { it != current } ?: break
+            imageCache.remove(victim)
+        }
+    }
+
+    /** 连续阅读按需取配图；失败返回空列表，正文照常排版。 */
+    suspend fun imagesForChapter(index: Int): List<ChapterImageInfo> {
+        val chapter = _state.value.chapters.getOrNull(index) ?: return emptyList()
+        return fetchChapterImages(index, chapter, force = false)
+    }
+
+    /**
+     * 配图开关变化：当场重建当前章，不要求重进阅读器。
+     *
+     * 关掉时立刻用已缓存的正文重排（不发请求）；打开时最多等一次配图请求。
+     * 位置仍走 [currentFraction]，与刷新本章同一口径，不新增位置字段。
+     */
+    fun onShowChapterImagesChanged() {
+        val body = _state.value.body ?: return
+        val index = body.chapterIndex
+        if (index != _state.value.currentIndex) return
+        val chapter = _state.value.chapters.getOrNull(index) ?: return
+        val content = body.source
+        val restore = currentFraction()
+        if (!deps.readerSettings.state.value.showChapterImages) {
+            applyContent(index, chapter, content, restore, emptyList())
+            return
+        }
+        val cached = imageCache[index]
+        if (cached != null) {
+            applyContent(index, chapter, content, restore, cached)
+            return
+        }
+        viewModelScope.launch {
+            val images = fetchChapterImages(index, chapter, force = false)
+            if (index != _state.value.currentIndex) return@launch
+            applyContent(index, chapter, content, restore, images)
+        }
+    }
+
     // ─── 预加载 ────────────────────────────────────────────────────────────────
 
     /**
@@ -352,6 +499,10 @@ class ReaderViewModel(
                         ?: return@forEach
                     remember(position, content)
                 }
+                // 配图只预热「下一章」：正文切章是最常见的动作，多取两章的图没有收益。
+                // 失败/超时都是空列表，不影响预取本身。
+                val next = index + 1
+                chapters.getOrNull(next)?.let { fetchChapterImages(next, it, force = false) }
             }
             prefetching -= wanted
         }
@@ -652,5 +803,14 @@ class ReaderViewModel(
 
         /** 进度上报节流窗口，与前端 `readerProgressAutoSave` 一致。 */
         const val PROGRESS_SAVE_INTERVAL_MS = 10_000L
+
+        /**
+         * 配图请求的超时。
+         *
+         * 配图与正文同批发布（块列表里带图片占位，不能二次重排），所以这个值直接等于
+         * 「图慢时正文最多晚多久出现」。取 1.2s：正常回源在 100–300ms，超时按无图排版，
+         * 且失败不缓存，下次进章会重试。
+         */
+        const val IMAGE_TIMEOUT_MS = 1_200L
     }
 }

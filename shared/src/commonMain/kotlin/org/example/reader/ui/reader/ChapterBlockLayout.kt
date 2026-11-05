@@ -12,31 +12,60 @@ import org.example.reader.core.model.TextBlock
 internal data class ReaderPage(
     val blocks: List<ChapterBlock>,
     val showTitle: Boolean,
-    /** 本页首块在整章内的下标，是进度与恢复的唯一基准。 */
-    val startParaIndex: Int,
+    /**
+     * 本页首块在**块列表**里的下标（含图片块），是进度与恢复的唯一基准。
+     * 不是 `ChapterBlock.paraIndex`——后者是文本段编号，插入图片后两者不再相等。
+     */
+    val startBlockIndex: Int,
 )
 
-/** 生产测量分派：文本走 Compose 测量，图片本轮明确不支持。 */
+/**
+ * 生产测量分派：文本走 Compose 测量，图片按原始宽高比占位（说明文字一并计入）。
+ *
+ * [captionGapPx] 是图片与说明之间的间距（dp 换算成像素），由调用方按当前 density 给出，
+ * 保证与渲染时的 `Spacer(IMAGE_CAPTION_GAP_DP)` 一致。
+ */
 internal fun measureChapterBlock(
     measurer: TextMeasurer,
     block: ChapterBlock,
     bodyStyle: TextStyle,
     widthPx: Int,
-): Int = measureChapterBlock(block) { text ->
+    captionGapPx: Int = 0,
+): Int = measureChapterBlock(block, bodyStyle, widthPx, captionGapPx) { text, style, maxLines ->
     measurer.measure(
         text = text,
-        style = bodyStyle,
+        style = style,
+        maxLines = maxLines,
         constraints = Constraints(maxWidth = widthPx),
     ).size.height
 }
 
-/** 可注入文本测量的块测量边界，便于主机测试覆盖未启用的图片分支。 */
+/**
+ * 可注入文本测量的块测量边界。
+ *
+ * 图片高度是纯几何计算（与字体无关），说明文字才需要测量；测试通过 [measureText]
+ * 注入固定高度，避免依赖真实字体度量。
+ */
 internal fun measureChapterBlock(
     block: ChapterBlock,
-    measureText: (AnnotatedString) -> Int,
+    bodyStyle: TextStyle,
+    widthPx: Int,
+    captionGapPx: Int = 0,
+    measureText: (AnnotatedString, TextStyle, Int) -> Int,
 ): Int = when (block) {
-    is TextBlock -> measureText(block.toAnnotatedString())
-    is ImageBlock -> error("ImageBlock measurement is not supported")
+    is TextBlock -> measureText(block.toAnnotatedString(), bodyStyle, Int.MAX_VALUE)
+    is ImageBlock -> {
+        val captionHeight = if (block.caption.isBlank()) {
+            0
+        } else {
+            measureText(
+                AnnotatedString(block.caption),
+                bodyStyle.imageCaptionStyle(),
+                IMAGE_CAPTION_MAX_LINES,
+            ) + captionGapPx
+        }
+        imageBlockHeightPx(widthPx, block) + captionHeight
+    }
 }
 
 /** 标题测量规则保持原样：仅首页计入标题高度，并额外留出三倍段距。 */
@@ -83,7 +112,7 @@ internal fun paginateBlocks(
             pages += ReaderPage(
                 blocks = current.toList(),
                 showTitle = first,
-                startParaIndex = consumed,
+                startBlockIndex = consumed,
             )
             consumed += current.size
         }
@@ -103,12 +132,12 @@ internal fun paginateBlocks(
     }
     if (current.isNotEmpty()) flush()
     return pages.ifEmpty {
-        listOf(ReaderPage(blocks = emptyList(), showTitle = true, startParaIndex = 0))
+        listOf(ReaderPage(blocks = emptyList(), showTitle = true, startBlockIndex = 0))
     }
 }
 
 /** 比例恢复出的逻辑块所在页；末块下标等于块数时自然落到最后页。 */
 internal fun pageForBlock(pages: List<ReaderPage>, blockIndex: Int): Int {
     if (pages.isEmpty()) return 0
-    return pages.indexOfLast { it.startParaIndex <= blockIndex }.coerceIn(0, pages.lastIndex)
+    return pages.indexOfLast { it.startBlockIndex <= blockIndex }.coerceIn(0, pages.lastIndex)
 }

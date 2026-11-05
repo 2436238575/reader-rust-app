@@ -38,6 +38,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil3.ImageLoader
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
@@ -111,6 +112,8 @@ fun ContinuousReader(
     viewModel: ReaderViewModel,
     /** 与竖排/HorizontalReader 共用的列表状态：自动阅读只认它。 */
     listState: LazyListState,
+    imageLoader: ImageLoader,
+    onImageClick: (String) -> Unit,
     /** 点按切控件由 `ReaderScreen` 的 pointerInput 负责，本组件不使用，只为调用形状统一。 */
     onToggleControls: () -> Unit,
     /** 进入时的章内位置（0..1，段落比例）：续读 / 重进 / 切换翻页方式都靠它定位。 */
@@ -161,6 +164,24 @@ fun ContinuousReader(
 
     /** 是否已完成首次定位。定位前只从当前章往后画，避免先画上一章又被定位顶掉。 */
     var restored by remember { mutableStateOf(false) }
+
+    /**
+     * 配图开关的代际。
+     *
+     * 已取到的快照是按旧规则建的（块序里有没有图片块），开关一变必须整窗重建，
+     * 否则「关掉配图」只在当前章生效、滚到下一章图片又回来。当前章除外：
+     * 它的快照由 VM 的镜像 effect 直接替换，先清空会让列表闪一屏占位并打乱锚点。
+     */
+    var lastShowImages by remember { mutableStateOf(settings.showChapterImages) }
+    var imagesEpoch by remember { mutableStateOf(0) }
+    LaunchedEffect(settings.showChapterImages) {
+        if (lastShowImages == settings.showChapterImages) return@LaunchedEffect
+        lastShowImages = settings.showChapterImages
+        val keep = stateRef.value.currentIndex
+        loaded.keys.filter { it != keep }.forEach { loaded.remove(it) }
+        failed.clear()
+        imagesEpoch++
+    }
 
     /**
      * 当前 item 列表的快照。
@@ -222,10 +243,12 @@ fun ContinuousReader(
                 return
             }
             // 在 ChapterContent 边界经唯一 Builder 建快照，章号与载荷同批写入。
+            // 配图与正文同批：连续列表的 item 下标由块序决定，事后插图会把定位锚整体挪位。
+            val images = viewModel.imagesForChapter(index)
             val chapterSnapshot = ChapterBlockSnapshot(
                 chapterIndex = index,
                 source = content,
-                blocks = ChapterBlockBuilder.build(content),
+                blocks = ChapterBlockBuilder.build(content, images),
             )
             check(chapterSnapshot.chapterIndex == index) { "Continuous snapshot chapter mismatch" }
             loaded[index] = chapterSnapshot
@@ -353,7 +376,7 @@ fun ContinuousReader(
     // 当前章 → 前后各 1 章 → 前后各 2 章。不做「一次拉满 7 章」：首屏只为当前章
     // 及紧邻章付费，跨过章末那一屏才需要它们；更远的章留在窗口里当占位。
     // 顺序从近到远，「用户正在等的那一章」永远排在前面。
-    LaunchedEffect(center, hideReadChapters, chapters.size) {
+    LaunchedEffect(center, hideReadChapters, chapters.size, imagesEpoch) {
         if (center !in chapters.indices) return@LaunchedEffect
         ensureChapter(center)
         // 被切章打断时整个 effect 取消，新窗口的一组请求随即接手（见各自的 finally 清理）
@@ -511,8 +534,8 @@ fun ContinuousReader(
                 rows += ContinuousItem.Pending(chapter, title, failed[chapter] == true)
             } else {
                 rows += ContinuousItem.Header(chapter, title)
-                snapshot.blocks.forEach { block ->
-                    rows += ContinuousItem.Body(chapter, block)
+                snapshot.blocks.forEachIndexed { index, block ->
+                    rows += ContinuousItem.Body(chapter, index, block)
                 }
             }
         }
@@ -552,7 +575,12 @@ fun ContinuousReader(
                         modifier = Modifier.padding(bottom = 12.dp),
                     )
 
-                    is ContinuousItem.Body -> ChapterBlockContent(block = item.block, bodyStyle = bodyStyle)
+                    is ContinuousItem.Body -> ChapterBlockContent(
+                        block = item.block,
+                        bodyStyle = bodyStyle,
+                        imageLoader = imageLoader,
+                        onImageClick = onImageClick,
+                    )
 
                     is ContinuousItem.Pending -> Column(
                         modifier = Modifier.fillMaxWidth().height(placeholderHeight),
@@ -770,13 +798,19 @@ internal sealed interface ContinuousItem {
         override val key: String get() = headerKey(chapter)
     }
 
-    /** 正文原子块；块自带本章内下标，不再依赖 String 载荷。 */
+    /**
+     * 正文原子块。
+     *
+     * `blockIndex` 是块在**本章块列表**里的下标（含图片块），不是 `block.paraIndex`：
+     * 配图块的锚点与紧随其后的文本块相同（都是「第 n 段」），用 `paraIndex` 做 key
+     * 会立刻撞成 `p:4:100` 重复 key 让列表崩溃，进度也会把图片当成那一段。
+     */
     data class Body(
         override val chapter: Int,
+        val blockIndex: Int,
         val block: ChapterBlock,
     ) : ContinuousItem {
-        val paragraphIndex: Int get() = block.paraIndex
-        override val key: String get() = paragraphKey(chapter, paragraphIndex)
+        override val key: String get() = paragraphKey(chapter, blockIndex)
     }
 
     /** 未取到正文的占位章：固定占一屏，文案告知第几章。 */

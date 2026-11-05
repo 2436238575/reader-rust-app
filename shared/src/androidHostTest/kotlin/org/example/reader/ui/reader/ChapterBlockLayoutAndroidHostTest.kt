@@ -1,8 +1,9 @@
 package org.example.reader.ui.reader
 
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.unit.sp
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import org.example.reader.core.model.ChapterBlock
@@ -31,7 +32,7 @@ class ChapterBlockLayoutAndroidHostTest {
     fun titleOnlyConsumesFirstPageAndGapOnlyAppliesBetweenBlocks() {
         val pages = paginate(textBlocks(3), titleHeightPx = 40, heightPx = 100, gapPx = 10) { 30 }
 
-        assertEquals(listOf(0, 1), pages.map { it.startParaIndex })
+        assertEquals(listOf(0, 1), pages.map { it.startBlockIndex })
         assertEquals(listOf(true, false), pages.map { it.showTitle })
         assertEquals(listOf(0), pages[0].blocks.map { it.paraIndex })
         assertEquals(listOf(1, 2), pages[1].blocks.map { it.paraIndex })
@@ -52,18 +53,39 @@ class ChapterBlockLayoutAndroidHostTest {
 
         assertEquals(3, pages.size)
         assertEquals(listOf(0, 1, 2), pages.flatMap { page -> page.blocks.map { it.paraIndex } })
-        assertEquals(listOf(0, 1, 2), pages.map { it.startParaIndex })
+        assertEquals(listOf(0, 1, 2), pages.map { it.startBlockIndex })
     }
 
     @Test
-    fun productionImageMeasurementIsExplicitlyUnsupported() {
-        val failure = assertFailsWith<IllegalStateException> {
-            measureChapterBlock(ImageBlock(paraIndex = 1, url = "fixture")) {
-                error("image must not reach text measurement")
-            }
+    fun imageHeightFollowsAspectRatioAndCaptionParticipatesInMeasurement() {
+        // 1400×933（番茄配图实测比例）：宽 500 时高 333，说明文字 + 间距另加
+        val landscape = ImageBlock(
+            paraIndex = 0,
+            url = "a",
+            caption = "配图（画师：奈月Oo）",
+            width = 1400,
+            height = 933,
+        )
+        val measured = mutableListOf<Pair<String, Int>>()
+        val height = measureChapterBlock(landscape, bodyStyle(), widthPx = 500, captionGapPx = 8) { text, style, maxLines ->
+            measured += text.text to maxLines
+            assertEquals(IMAGE_CAPTION_MAX_LINES, maxLines)
+            assertEquals(IMAGE_CAPTION_SCALE, style.fontSize.value / 18f, 0.001f)
+            30
         }
 
-        assertEquals("ImageBlock measurement is not supported", failure.message)
+        assertEquals(333 + 30 + 8, height)
+        assertEquals(listOf("配图（画师：奈月Oo）" to IMAGE_CAPTION_MAX_LINES), measured)
+
+        // 无说明文字时不测文字、不加间距
+        val bare = measureChapterBlock(landscape.copy(caption = ""), bodyStyle(), widthPx = 500) { _, _, _ ->
+            error("没有说明文字就不该测文字")
+        }
+        assertEquals(333, bare)
+
+        // 比例未知按 4:3 占位；竖图最多 1.5 倍宽
+        assertEquals(375, measureBlockHeight(landscape.copy(caption = "", width = 0, height = 0)))
+        assertEquals(750, measureBlockHeight(landscape.copy(caption = "", width = 100, height = 2000)))
     }
 
     @Test
@@ -74,9 +96,10 @@ class ChapterBlockLayoutAndroidHostTest {
             spans = listOf(TextSpan(0, 6, TextSpanStyle.NONE)),
         )
 
-        val height = measureChapterBlock(block) { annotated ->
+        val height = measureChapterBlock(block, bodyStyle(), widthPx = 500) { annotated, _, maxLines ->
             assertEquals(block.text, annotated.text)
             assertTrue(annotated.spanStyles.isEmpty())
+            assertEquals(Int.MAX_VALUE, maxLines)
             42
         }
 
@@ -91,7 +114,7 @@ class ChapterBlockLayoutAndroidHostTest {
         assertEquals(1, empty.size)
         assertTrue(empty.single().showTitle)
         assertTrue(empty.single().blocks.isEmpty())
-        assertEquals(0, empty.single().startParaIndex)
+        assertEquals(0, empty.single().startBlockIndex)
         assertTrue(
             paginate(textBlocks(1), titleHeightPx = 0, widthPx = 0, heightPx = 100, gapPx = 10) { 10 }
                 .isEmpty(),
@@ -119,4 +142,10 @@ class ChapterBlockLayoutAndroidHostTest {
 
     private fun textBlock(index: Int): TextBlock =
         TextBlock(paraIndex = index, text = "块$index", spans = emptyList())
+
+    private fun bodyStyle(): TextStyle = TextStyle(fontSize = 18.sp, lineHeight = 32.4.sp)
+
+    /** 只关心几何高度时的简写：说明文字测量固定返回 0。 */
+    private fun measureBlockHeight(block: ChapterBlock): Int =
+        measureChapterBlock(block, bodyStyle(), widthPx = 500) { _, _, _ -> 0 }
 }

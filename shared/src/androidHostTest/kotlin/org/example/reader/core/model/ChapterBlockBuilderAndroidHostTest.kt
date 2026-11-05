@@ -71,6 +71,87 @@ class ChapterBlockBuilderAndroidHostTest {
     }
 
     @Test
+    fun imageAtRawLineSitsBeforeThatParagraphWithoutChangingTextNumbering() {
+        // 原始行号 1 = 第二行「乙」；图片插在它前面
+        val blocks = ChapterBlockBuilder.build(
+            ChapterContent(content = "甲\n乙\n丙"),
+            listOf(ChapterImageInfo(url = "u1", paraIndex = 1, caption = " 说明 ", width = 1400, height = 933)),
+        )
+
+        assertEquals(listOf("甲", null, "乙", "丙"), blocks.map { (it as? TextBlock)?.text })
+        assertEquals(listOf(0, 1, 1, 2), blocks.map { it.paraIndex })
+        val image = blocks[1] as ImageBlock
+        assertEquals("u1", image.url)
+        assertEquals("说明", image.caption)
+        assertEquals(1400, image.width)
+        assertEquals(933, image.height)
+    }
+
+    @Test
+    fun imageOnBlankLineAttachesToNextTextBlockAndOutOfRangeGoesToChapterEnd() {
+        // 行 1、2 是空行，都归到「后面第一个非空段」（下标 1）
+        val blocks = ChapterBlockBuilder.build(
+            ChapterContent(content = "甲\n\n\n乙\n丙"),
+            listOf(
+                ChapterImageInfo(url = "blank", paraIndex = 2),
+                ChapterImageInfo(url = "tailNull", paraIndex = null),
+                ChapterImageInfo(url = "tailBig", paraIndex = 99),
+                ChapterImageInfo(url = "negative", paraIndex = -3),
+            ),
+        )
+
+        assertEquals(
+            listOf("negative", "甲", "blank", "乙", "丙", "tailNull", "tailBig"),
+            blocks.map { (it as? ImageBlock)?.url ?: (it as TextBlock).text },
+        )
+        assertEquals(listOf(0, 0, 1, 1, 2, 3, 3), blocks.map { it.paraIndex })
+    }
+
+    @Test
+    fun duplicateImageUrlsAreKeptOnceAndBlankUrlsAreDropped() {
+        val blocks = ChapterBlockBuilder.build(
+            ChapterContent(content = "甲"),
+            listOf(
+                ChapterImageInfo(url = "same", paraIndex = 0),
+                ChapterImageInfo(url = "same", paraIndex = 0),
+                ChapterImageInfo(url = "  ", paraIndex = 0),
+            ),
+        )
+
+        assertEquals(1, blocks.count { it is ImageBlock })
+    }
+
+    @Test
+    fun captionAlreadyPresentInBodyIsNotRenderedTwice() {
+        val blocks = ChapterBlockBuilder.build(
+            ChapterContent(content = "甲\n配图（画师：奈月Oo）\n乙"),
+            listOf(
+                ChapterImageInfo(
+                    url = "u",
+                    paraIndex = 1,
+                    caption = "配图（画师：奈月Oo）",
+                ),
+            ),
+        )
+
+        val image = blocks[1] as ImageBlock
+        assertEquals("", image.caption)
+        assertEquals("配图（画师：奈月Oo）", (blocks[2] as TextBlock).text)
+    }
+
+    @Test
+    fun imageOnlyChapterProducesImagesAnchoredAtZero() {
+        val blocks = ChapterBlockBuilder.build(
+            ChapterContent(content = ""),
+            listOf(ChapterImageInfo(url = "only", paraIndex = 0)),
+        )
+
+        assertEquals(1, blocks.size)
+        assertTrue(blocks.single() is ImageBlock)
+        assertEquals(0, blocks.single().paraIndex)
+    }
+
+    @Test
     fun coreModelPublicSignaturesDoNotExposeComposeTypes() {
         val modelTypes = listOf(
             ChapterElement::class.java,

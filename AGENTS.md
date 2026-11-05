@@ -143,8 +143,8 @@ androidApp/        Activity、清单、图标、资源
 - 阅读器设置只有一个来源 `deps.readerSettings`（`core/settings/ReaderSettings.kt`），
   面板改一项正文立即重排；新增配置项要同时补 `SettingsKeys` 与 load/update。
 - **左右翻页（`HorizontalReader.kt`）**：分页按块整体装箱（`TextMeasurer` 逐块量高），
-  不在段落中间切；每页记 `startParaIndex`（页首正文块下标），进度与恢复都按
-  **块比例**换算，与竖排模式同一口径（不按页码，换字号后页码会变）。
+  不在段落中间切；每页记 `startBlockIndex`（页首块在**块列表**里的下标，含图片块），
+  进度与恢复都按 **块比例**换算，与竖排模式同一口径（不按页码，换字号后页码会变）。
   分页只避开系统栏，**不为工具条预留高度**——工具条可收起，收起来整页可见。
   内容/尺寸/metrics/标题任一变化都构成新**布局代际**（`HorizontalLayoutGeneration`），
   必须重建 PagerState 并从 `HorizontalRestoreSession` 的逻辑锚重新定位；
@@ -159,6 +159,18 @@ androidApp/        Activity、清单、图标、资源
   位置换算只在 `ui/reader/ReaderPosition.kt`：`blockFraction` / `blockAtFraction` 是
   互逆对，`modeSwitchFraction` 负责五模式交接；连续阅读的采样必须带 `generation`，
   旧代际样本不得改章或落库。
+- **配图（P1-6 定稿）**：`ChapterBlockBuilder.build(content, images)` 是唯一的图片插入点——
+  `ChapterImageInfo.paraIndex` 是**原始行号**（按 `\n` 切），Builder 把它换成「紧随其后的
+  文本块下标」；空行归到下一个非空段，越界/`null` 归章末，同 URL 去重。
+  `TextBlock.paraIndex` 的编号与加图前一致，但**块列表下标会变**，所以：
+  - 进度、分页页首（`startBlockIndex`）、连续列表 key（`p:<章>:<块下标>`）一律用**块列表下标**；
+    连续列表若改回 `block.paraIndex`，图片与它后面那段同号，会直接抛「key 已存在」
+  - 图片高度只由 `ChapterImageLayout.imageBlockAspect` 决定（原始比例，未知 4:3，纵向夹 1.5 倍宽），
+    测量与 `AsyncImage.aspectRatio` 共用；说明文字最多两行、字号 0.8 倍，已计入测量
+  - 配图与正文**同批发布**（`applyContent(..., images)`），不要事后插块，否则整章重排一次；
+    接口失败/超时按无图排版、不缓存失败，`enabled=false` 是书源级事实（本会话不再请求）
+  - `SingleChapterContentKey` 只比 `BlockLayout`（文本/锚点/尺寸/说明），**不比图片 URL**：
+    刷新会换签名地址，算进签名就会被判成内容变了、把刚修好的视口对齐又打回去
 - 翻页模式的正文区域由 `contentIndex`（正文属于哪一章，现为 `body.chapterIndex` 的派生值）把关：
   换章时 `currentIndex` 先变、正文后到，必须等两者一致再排版，
   否则会拿上一章正文分页并提前消费掉恢复位置。

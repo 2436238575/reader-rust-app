@@ -14,6 +14,7 @@ import org.example.reader.core.model.BookSourceSummary
 import org.example.reader.core.model.Bookmark
 import org.example.reader.core.model.CacheStats
 import org.example.reader.core.model.ChapterContent
+import org.example.reader.core.model.ChapterImages
 import org.example.reader.core.model.ExploreKind
 import org.example.reader.core.model.ReplaceRule
 import org.example.reader.core.model.SearchBook
@@ -219,6 +220,21 @@ class ReaderApi(
                         BatchContentChapterRequest(index = it.index, chapterUrl = it.url)
                     },
                 ),
+            ),
+        )
+
+    /**
+     * 本章配图。
+     *
+     * 书源没声明配图规则时 `enabled=false`，调用方应停止后续请求；
+     * 返回空列表是「这一章没图」，不是错误。配图地址带时效签名，**不要跨会话缓存**。
+     */
+    suspend fun getChapterImages(bookId: String, chapterUrl: String): ApiResult<ChapterImages> =
+        post(
+            "/getChapterImages",
+            json.encodeToString(
+                ChapterImageRequest.serializer(),
+                ChapterImageRequest(bookId = bookId, chapterUrl = chapterUrl),
             ),
         )
 

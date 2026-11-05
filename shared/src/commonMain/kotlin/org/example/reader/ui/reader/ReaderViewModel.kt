@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -12,6 +13,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.example.reader.core.AppDependencies
 import org.example.reader.core.model.Book
@@ -229,27 +231,9 @@ class ReaderViewModel(
         if (!force) {
             val cached = contentCache[index]
             if (cached != null) {
-                // 访问序 Map：上面这次 get 已把该章挪到队尾，命中即刷新 LRU 顺序
-                // 关掉配图时即使缓存里还有旧图也不能用——开关的语义是「正文里不要图片块」
-                if (!imagesWanted()) {
-                    applyContent(index, chapter, cached, restore, emptyList())
-                    prefetchNeighbors(index)
-                    return
-                }
-                val imagesReady = imageCache[index]
-                if (imagesReady != null) {
-                    applyContent(index, chapter, cached, restore, imagesReady)
-                    prefetchNeighbors(index)
-                    return
-                }
-                // 正文命中但配图还没取过：配图是正文的一部分（块列表里占位），
-                // 必须先取到再发布，否则会出现「先纯文本、再整体下移一张图」的重排。
-                viewModelScope.launch {
-                    val images = fetchChapterImages(index, chapter, force = false)
-                    if (gen != generation || index != _state.value.currentIndex) return@launch
-                    applyContent(index, chapter, cached, restore, images)
-                    prefetchNeighbors(index)
-                }
+                // 访问序 Map：上面这次 get 已把该章挪到队尾，命中即刷新 LRU 顺序。
+                // 这里仍要进协程：配图可能没取过、简繁转换要离开主线程。
+                applyFromCache(index, chapter, cached, restore, gen)
                 return
             }
         }
@@ -274,7 +258,9 @@ class ReaderViewModel(
             when (result) {
                 is ApiResult.Success -> {
                     remember(index, result.value)
-                    applyContent(index, chapter, result.value, restore, imagesResult.await())
+                    val display = displayContent(result.value)
+                    if (gen != generation || index != _state.value.currentIndex) return@launch
+                    applyContent(index, chapter, result.value, display, restore, imagesResult.await())
                     prefetchNeighbors(index)
                 }
 
@@ -318,6 +304,45 @@ class ReaderViewModel(
     }
 
     /**
+     * 缓存命中后发布正文。
+     *
+     * 命中缓存只说明「正文不用再取」：配图可能还没取过，简繁转换也要离开主线程。
+     * 所以这里仍走协程，并用与网络路径相同的代际守卫。
+     */
+    private fun applyFromCache(
+        index: Int,
+        chapter: BookChapter,
+        cached: ChapterContent,
+        restore: Float,
+        gen: Int,
+    ) {
+        viewModelScope.launch {
+            // 关掉配图时即使缓存里还有旧图也不能用——开关的语义是「正文里不要图片块」
+            val images = if (imagesWanted()) fetchChapterImages(index, chapter, false) else emptyList()
+            val display = displayContent(cached)
+            if (gen != generation || index != _state.value.currentIndex) return@launch
+            applyContent(index, chapter, cached, display, restore, images)
+            prefetchNeighbors(index)
+        }
+    }
+
+    /**
+     * 显示用正文：按当前简繁设置转换。
+     *
+     * 只在显示层生效——快照的 `source` 始终保留原文，编辑、版本对比与进度换算都用原文。
+     * 放到 Default 线程：opencc4j 首次调用要解析 OpenCC 词表（桌面 JVM ~0.4s，设备更慢），
+     * 不能落在主线程上。
+     */
+    private suspend fun displayContent(content: ChapterContent): ChapterContent {
+        if (content.content.isEmpty()) return content
+        val mode = deps.readerSettings.state.value.chineseMode
+        val converted = withContext(Dispatchers.Default) {
+            deps.chineseConverter.convert(content.content, mode)
+        }
+        return if (converted == content.content) content else content.copy(content = converted)
+    }
+
+    /**
      * 应用正文。
      *
      * 第一句就是归属校验（防御性）：正文只能落到它自己所属的那一章。它与代际校验是两道闸，
@@ -325,11 +350,15 @@ class ReaderViewModel(
      *
      * 位置走参数（[restoreFraction]），本方法**不改** `lastFraction`：位置与章号已经在
      * [loadContent] 里同批更新过，这里再写一次就会与 `onScrolled` 的延迟补存抢时序。
+     *
+     * [content] 是原文（进快照、供后续编辑/版本用），[display] 是转换过简繁的显示正文，
+     * 只用来切块与排版。
      */
     private fun applyContent(
         index: Int,
         chapter: BookChapter,
         content: ChapterContent,
+        display: ChapterContent,
         restoreFraction: Float,
         images: List<ChapterImageInfo> = emptyList(),
     ) {
@@ -337,7 +366,7 @@ class ReaderViewModel(
         val snapshot = ChapterBlockSnapshot(
             chapterIndex = index,
             source = content,
-            blocks = ChapterBlockBuilder.build(content, images),
+            blocks = ChapterBlockBuilder.build(display, images),
             revision = generation,
         )
         val restore = restoreFraction.coerceIn(0f, 1f)
@@ -444,31 +473,25 @@ class ReaderViewModel(
     }
 
     /**
-     * 配图开关变化：当场重建当前章，不要求重进阅读器。
+     * 只改「显示方式」的设置变化后重建当前章：配图开关、简繁转换。
      *
-     * 关掉时立刻用已缓存的正文重排（不发请求）；打开时最多等一次配图请求。
-     * 位置仍走 [currentFraction]，与刷新本章同一口径，不新增位置字段。
+     * 正文取自快照里的 `source`（原文，永远是转换前的），所以：
+     * - 关配图：不请求接口，直接按无图重排；
+     * - 开配图 / 换简繁：最多等一次配图请求与一次转换（转换在 Default 线程）；
+     * - 位置仍走 [currentFraction]，与刷新本章同一口径，不新增位置字段。
      */
-    fun onShowChapterImagesChanged() {
+    fun rebuildCurrentChapter() {
         val body = _state.value.body ?: return
         val index = body.chapterIndex
         if (index != _state.value.currentIndex) return
         val chapter = _state.value.chapters.getOrNull(index) ?: return
         val content = body.source
         val restore = currentFraction()
-        if (!deps.readerSettings.state.value.showChapterImages) {
-            applyContent(index, chapter, content, restore, emptyList())
-            return
-        }
-        val cached = imageCache[index]
-        if (cached != null) {
-            applyContent(index, chapter, content, restore, cached)
-            return
-        }
         viewModelScope.launch {
-            val images = fetchChapterImages(index, chapter, force = false)
+            val images = if (imagesWanted()) fetchChapterImages(index, chapter, false) else emptyList()
+            val display = displayContent(content)
             if (index != _state.value.currentIndex) return@launch
-            applyContent(index, chapter, content, restore, images)
+            applyContent(index, chapter, content, display, restore, images)
         }
     }
 

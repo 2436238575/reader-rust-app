@@ -15,6 +15,9 @@ import org.example.reader.core.settings.LayoutPreference
 import org.example.reader.core.settings.ReaderSettingsStore
 import org.example.reader.core.settings.SettingsKeys
 import org.example.reader.core.settings.SharedPrefsKeyValueStore
+import org.example.reader.core.text.ChineseConverter
+import org.example.reader.core.text.OpenccChineseConverter
+import kotlin.concurrent.thread
 
 /**
  * Android 侧依赖装配。
@@ -50,6 +53,8 @@ class AndroidDependencies(context: Context) : AppDependencies {
 
     override val recentBooks = RecentBooksStore(settings)
 
+    override val chineseConverter: ChineseConverter = OpenccChineseConverter()
+
     override val imageLoader: ImageLoader = ImageLoader.Builder(appContext)
         .components {
             // 复用同一 OkHttp 客户端：带上 reader_access Cookie，封面才不会 401。
@@ -60,6 +65,9 @@ class AndroidDependencies(context: Context) : AppDependencies {
 
     init {
         restoreSession()
+        // OpenCC 词表解析是纯 CPU 初始化（桌面 JVM ~0.4s，设备更慢）。放到后台线程，
+        // 避免用户首次切「繁体」时在渲染路径上卡住主线程；失败也不影响启动。
+        thread(name = "opencc-warmup", isDaemon = true) { chineseConverter.warmUp() }
     }
 
     private fun restoreSession() {

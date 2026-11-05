@@ -35,6 +35,9 @@ kotlin {
             implementation(libs.okhttp.logging)
             implementation(libs.coil.network.okhttp)
             implementation(libs.androidx.activity.compose)
+            // 简繁转换：opencc4j 是纯 JVM 库（OpenCC 官方列出的 Java 移植），
+            // 只在 androidMain 引入，commonMain 通过 ChineseConverter 接口隔离
+            implementation(libs.opencc4j)
         }
         commonMain.dependencies {
             implementation(libs.androidx.compose.runtime)

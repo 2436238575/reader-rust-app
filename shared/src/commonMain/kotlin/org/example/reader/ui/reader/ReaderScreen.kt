@@ -248,13 +248,16 @@ fun ReaderScreen(
 
     LaunchedEffect(startIndex) { viewModel.applyStartIndex(startIndex) }
 
-    // 配图开关：改动后当场重建当前章（关掉不发请求，打开最多等一次配图请求）。
+    // 只改「显示方式」的设置（配图开关 / 简繁转换）：改动后当场重建当前章。
     // 首帧不触发——那不是「改动」，只是进入阅读器时读到的现值。
-    var lastShowImages by remember { mutableStateOf(settings.showChapterImages) }
-    LaunchedEffect(settings.showChapterImages) {
-        if (lastShowImages == settings.showChapterImages) return@LaunchedEffect
-        lastShowImages = settings.showChapterImages
-        viewModel.onShowChapterImagesChanged()
+    var lastDisplayKey by remember {
+        mutableStateOf(settings.showChapterImages to settings.chineseMode)
+    }
+    LaunchedEffect(settings.showChapterImages, settings.chineseMode) {
+        val key = settings.showChapterImages to settings.chineseMode
+        if (lastDisplayKey == key) return@LaunchedEffect
+        lastDisplayKey = key
+        viewModel.rebuildCurrentChapter()
     }
 
     // 加载/刷新失败的可见提示。
@@ -757,6 +760,7 @@ fun ReaderScreen(
                             onLineHeightChange = deps.readerSettings::setLineHeight,
                             onParagraphSpacingChange = deps.readerSettings::setParagraphSpacing,
                             onShowChapterImagesChange = deps.readerSettings::setShowChapterImages,
+                            onChineseModeChange = deps.readerSettings::setChineseMode,
                             // 自动阅读（P1-8）：面板只配「怎么滚」，开关仍在底栏
                             onClickActionChange = deps.readerSettings::setClickAction,
                             onAutoPageModeChange = deps.readerSettings::setAutoPageMode,

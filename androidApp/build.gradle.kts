@@ -32,6 +32,10 @@ android {
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+            // opencc4j 的传递依赖 nlp-common 带了一份 5.4MB 的词频字典，只有 jieba/默认 Trie
+            // 才会读它；opencc4j 走自己的 OpenCC 词表（最大正向匹配），用不到。
+            // 已用「剥离该资源的 jar」跑过同一批转换用例，结果一致（见 P1-7 记录）。
+            excludes += "nlp/word_freq_dict.txt"
         }
     }
     buildTypes {

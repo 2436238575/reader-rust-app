@@ -53,6 +53,7 @@ import androidx.compose.ui.unit.dp
 import org.example.reader.core.settings.AutoPageMode
 import org.example.reader.core.settings.ClickAction
 import org.example.reader.core.settings.ReadMethod
+import org.example.reader.core.text.ChineseMode
 import org.example.reader.core.settings.ReaderSettings
 import kotlin.math.roundToInt
 
@@ -98,6 +99,8 @@ fun ReaderSettingsPanel(
     onParagraphSpacingChange: (Float) -> Unit,
     /** 章节配图开关（P1-6）：关掉后不再请求配图，正文回到纯文本排版。 */
     onShowChapterImagesChange: (Boolean) -> Unit,
+    /** 简繁转换（P1-7）：改完当场重排当前章。 */
+    onChineseModeChange: (ChineseMode) -> Unit,
     /**
      * 自动阅读（P1-8）三个回调。
      *
@@ -171,6 +174,11 @@ fun ReaderSettingsPanel(
         ClickActionRow(
             clickAction = settings.clickAction,
             onSelect = onClickActionChange,
+        )
+
+        ChineseModeRow(
+            mode = settings.chineseMode,
+            onSelect = onChineseModeChange,
         )
 
         ImageToggleRow(
@@ -442,6 +450,33 @@ private fun ClickActionRow(clickAction: String, onSelect: (String) -> Unit) {
         Spacer(Modifier.height(4.dp))
         Text(
             text = "四边 4% 留白不触发；忽略档仍可点中间切出控件。",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/** 简繁两档：与前端 `chineseMode` 同值，切完立即重排当前章。 */
+@Composable
+private fun ChineseModeRow(mode: ChineseMode, onSelect: (ChineseMode) -> Unit) {
+    Column {
+        Text("简繁转换", style = MaterialTheme.typography.labelLarge)
+        Spacer(Modifier.height(6.dp))
+        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+            ChineseMode.entries.forEachIndexed { index, option ->
+                SegmentedButton(
+                    selected = option == mode,
+                    onClick = { onSelect(option) },
+                    shape = SegmentedButtonDefaults.itemShape(index = index, count = ChineseMode.entries.size),
+                    label = {
+                        Text(option.label, style = MaterialTheme.typography.labelMedium, maxLines = 1)
+                    },
+                )
+            }
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text = "繁体按台湾正体转换，与 Web 端同一套词表；只影响显示，不改原文。",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

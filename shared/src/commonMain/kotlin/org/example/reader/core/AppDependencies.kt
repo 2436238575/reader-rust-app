@@ -7,6 +7,7 @@ import org.example.reader.core.session.SessionStore
 import org.example.reader.core.settings.KeyValueStore
 import org.example.reader.core.settings.LayoutPreference
 import org.example.reader.core.settings.ReaderSettingsStore
+import org.example.reader.core.text.ChineseConverter
 
 /**
  * 应用依赖容器。
@@ -33,6 +34,14 @@ interface AppDependencies {
 
     /** 最近阅读本地镜像：阅读器写入、最近页读取，必须共用同一实例。 */
     val recentBooks: RecentBooksStore
+
+    /**
+     * 正文简繁转换。
+     *
+     * 接口在 commonMain，实现在 androidMain（opencc4j）；只用于显示，
+     * 快照里的原文与进度换算都不经过它。
+     */
+    val chineseConverter: ChineseConverter
 
     /** 清理会话凭据（Cookie + 本地登录提示）。 */
     fun clearSession()

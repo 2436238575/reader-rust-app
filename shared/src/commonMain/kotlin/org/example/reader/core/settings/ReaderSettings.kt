@@ -3,6 +3,7 @@ package org.example.reader.core.settings
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import org.example.reader.core.text.ChineseMode
 import org.example.reader.ui.reader.ReaderPalettes
 
 /**
@@ -96,6 +97,13 @@ data class ReaderSettings(
      * 纯文本读者不该为它付流量。默认值照抄前端 `showChapterImages: true`。
      */
     val showChapterImages: Boolean = true,
+    /**
+     * 正文简繁转换（P1-7）。
+     *
+     * 「简体」不是不转换：繁中书源在简体档位会转成简体，与前端 `t2cn` 一致。
+     * 转换只发生在显示层，缓存与快照里仍保留原文。
+     */
+    val chineseMode: ChineseMode = ChineseMode.Simplified,
 ) {
     companion object {
         const val DEFAULT_FONT_SIZE = 18
@@ -196,6 +204,9 @@ class ReaderSettingsStore(private val store: KeyValueStore) {
     /** 章节配图开关：改动后由阅读器重建当前章正文（关掉即回到纯文本排版）。 */
     fun setShowChapterImages(enabled: Boolean) = update { it.copy(showChapterImages = enabled) }
 
+    /** 简繁转换：改动后由阅读器重建当前章正文，不需要重进。 */
+    fun setChineseMode(mode: ChineseMode) = update { it.copy(chineseMode = mode) }
+
     /**
      * 切换自动阅读的滚动方式（像素 / 段落）。
      *
@@ -263,6 +274,7 @@ class ReaderSettingsStore(private val store: KeyValueStore) {
         store.putInt(SettingsKeys.READER_PAGE_SPEED, next.pageSpeed)
         store.putString(SettingsKeys.READER_CLICK_ACTION, next.clickAction)
         store.putBoolean(SettingsKeys.READER_SHOW_CHAPTER_IMAGES, next.showChapterImages)
+        store.putString(SettingsKeys.READER_CHINESE_MODE, next.chineseMode.key)
     }
 
     /**
@@ -308,6 +320,7 @@ class ReaderSettingsStore(private val store: KeyValueStore) {
                 .getInt(SettingsKeys.READER_PAGE_SPEED, ReaderSettings.DEFAULT_PAGE_SPEED)
                 .coerceIn(ReaderSettings.MIN_PAGE_SPEED, ReaderSettings.MAX_PAGE_SPEED),
             showChapterImages = store.getBoolean(SettingsKeys.READER_SHOW_CHAPTER_IMAGES, true),
+            chineseMode = ChineseMode.fromKey(store.getString(SettingsKeys.READER_CHINESE_MODE)),
         )
     }
 }

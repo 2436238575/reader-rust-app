@@ -171,6 +171,13 @@ androidApp/        Activity、清单、图标、资源
     接口失败/超时按无图排版、不缓存失败，`enabled=false` 是书源级事实（本会话不再请求）
   - `SingleChapterContentKey` 只比 `BlockLayout`（文本/锚点/尺寸/说明），**不比图片 URL**：
     刷新会换签名地址，算进签名就会被判成内容变了、把刚修好的视口对齐又打回去
+- **正文显示管线（P1-7 定稿）**：`applyContent(content, display)` 的两个入参分工固定——
+  `content` 是原文（进快照，编辑/版本/diff/进度都用它），`display` 是只用于切块与排版的
+  显示文本。当前 `display` 由简繁转换产生（`ChineseConverter` 接口在 commonMain、
+  opencc4j 实现在 androidMain；用 Tw 变体对齐前端 `cn2t`/`t2cn`）。
+  接替换规则（P2-8）时顺序固定为 **替换规则 → 简繁转换**；两步都只能改文本，
+  **不得改变换行数量**（配图 `paraIndex` 是原始行号）。转换必须离开主线程
+  （`Dispatchers.Default`，首次词典解析 ~0.4s），失败一律回退原文。
 - 翻页模式的正文区域由 `contentIndex`（正文属于哪一章，现为 `body.chapterIndex` 的派生值）把关：
   换章时 `currentIndex` 先变、正文后到，必须等两者一致再排版，
   否则会拿上一章正文分页并提前消费掉恢复位置。

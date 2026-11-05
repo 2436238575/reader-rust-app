@@ -100,8 +100,11 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.example.reader.core.AppDependencies
+import org.example.reader.core.font.remoteFileName
 import org.example.reader.core.model.Book
 import org.example.reader.core.model.ChapterBlock
 import org.example.reader.core.model.ImageBlock
@@ -245,6 +248,26 @@ fun ReaderScreen(
     val currentClickAction by rememberUpdatedState(settings.clickAction)
     val hint: (String) -> Unit = { message ->
         scope.launch { snackbarHostState.showSnackbar(message) }
+    }
+
+    // 需要联网下载的字体（鸿蒙/小米）：revision 变化会触发重组，让字体族重新解析
+    val fontRevision by deps.fonts.revision.collectAsStateWithLifecycle()
+    val fontPath = remember(settings.fontFamily, fontRevision) {
+        deps.fonts.cachedPath(settings.fontFamily)
+    }
+    LaunchedEffect(settings.fontFamily, fontRevision) {
+        val font = settings.fontFamily
+        if (font.remoteFileName == null || deps.fonts.cachedPath(font) != null) return@LaunchedEffect
+        hint("正在下载字体（约 8MB）…")
+        val result = deps.fonts.ensure(font)
+        if (result.isSuccess) {
+            // 后台预解析 Typeface，避免下载完成后第一次重组在主线程解析 8MB 字体
+            withContext(Dispatchers.Default) {
+                font.toFontFamily(deps.fonts.cachedPath(font))
+            }
+        } else {
+            hint("字体下载失败，暂用系统字体：${result.exceptionOrNull()?.message ?: "未知错误"}")
+        }
     }
 
     LaunchedEffect(startIndex) { viewModel.applyStartIndex(startIndex) }
@@ -566,6 +589,7 @@ fun ReaderScreen(
                     palette = palette,
                     imageLoader = deps.imageLoader,
                     onImageClick = openImage,
+                    fontPath = fontPath,
                     onPrevChapter = viewModel::prevChapter,
                     onNextChapter = viewModel::nextChapter,
                     onToggleControls = { controlsVisible = !controlsVisible },
@@ -584,6 +608,7 @@ fun ReaderScreen(
                     listState = listState,
                     imageLoader = deps.imageLoader,
                     onImageClick = openImage,
+                    fontPath = fontPath,
                     onToggleControls = { controlsVisible = !controlsVisible },
                     restoreFraction = restoreFraction,
                     hideReadChapters = settings.method == ReadMethod.Scroll2,
@@ -597,6 +622,7 @@ fun ReaderScreen(
                     listState = listState,
                     imageLoader = deps.imageLoader,
                     onImageClick = openImage,
+                    fontPath = fontPath,
                     onPrev = viewModel::prevChapter,
                     onNext = viewModel::nextChapter,
                     modifier = verticalTapModifier,
@@ -791,6 +817,8 @@ private fun ReaderContent(
     listState: androidx.compose.foundation.lazy.LazyListState,
     imageLoader: ImageLoader,
     onImageClick: (String) -> Unit,
+    /** 已下载字体的本地路径；未下载时为空，回退系统字族。 */
+    fontPath: String?,
     onPrev: () -> Unit,
     onNext: () -> Unit,
     modifier: Modifier = Modifier,
@@ -817,7 +845,7 @@ private fun ReaderContent(
     // 正文永远避开系统栏；控件只是覆盖层，不参与布局
     val topInset = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
     val bottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-    val lineMetrics = ReaderLineMetrics.from(settings)
+    val lineMetrics = ReaderLineMetrics.from(settings, fontPath)
     val paragraphGap = lineMetrics.paragraphGapDp(LocalDensity.current)
     val bodyStyle = lineMetrics.bodyStyle(palette.text)
 

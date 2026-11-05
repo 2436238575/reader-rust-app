@@ -368,20 +368,30 @@ private fun FontFamilyRow(font: ReaderFont, onSelect: (ReaderFont) -> Unit) {
     Column {
         Text("正文字体", style = MaterialTheme.typography.labelLarge)
         Spacer(Modifier.height(6.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            ReaderFont.entries.forEach { option ->
-                FilterChip(
-                    selected = option == font,
-                    onClick = { onSelect(option) },
-                    label = {
-                        Text(option.label, style = MaterialTheme.typography.labelSmall, maxLines = 1)
-                    },
-                )
+        // 六个选项分两行：411dp 宽度下一行放不下，硬挤会把标签压成省略号
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            ReaderFont.entries.chunked(3).forEach { rowOptions ->
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    rowOptions.forEach { option ->
+                        FilterChip(
+                            selected = option == font,
+                            onClick = { onSelect(option) },
+                            label = {
+                                Text(
+                                    option.label,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    maxLines = 1,
+                                )
+                            },
+                        )
+                    }
+                }
             }
         }
         Spacer(Modifier.height(4.dp))
         Text(
-            text = "黑体/宋体/等宽对应系统 sans/serif/mono；楷体、仿宋按宋体呈现。",
+            text = "黑体/宋体/等宽对应系统 sans/serif/mono；鸿蒙、小米首次切换需联网下载" +
+                "（约 8MB，未修改原始字体，仅 Regular，华为/小米免费商用）；楷体、仿宋按宋体呈现。",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

@@ -18,6 +18,10 @@ enum class ReaderFont(val key: String, val label: String) {
     Heiti("heiti", "黑体"),
     Songti("songti", "宋体"),
     Mono("mono", "等宽"),
+    /** 华为 HarmonyOS Sans（内置未修改的 Regular，见 assets/fonts 授权文件）。 */
+    Harmony("harmony", "鸿蒙"),
+    /** 小米 MiSans（内置未修改的 Regular，见 assets/fonts 授权文件）。 */
+    MiSans("misans", "小米"),
     ;
 
     companion object {
@@ -25,6 +29,8 @@ enum class ReaderFont(val key: String, val label: String) {
             Heiti.key -> Heiti
             Songti.key, "kaiti", "fangsong" -> Songti
             Mono.key -> Mono
+            Harmony.key -> Harmony
+            MiSans.key -> MiSans
             else -> System
         }
     }

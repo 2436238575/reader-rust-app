@@ -114,6 +114,8 @@ fun ContinuousReader(
     listState: LazyListState,
     imageLoader: ImageLoader,
     onImageClick: (String) -> Unit,
+    /** 已下载字体的本地路径；未下载时为空，回退系统字族。 */
+    fontPath: String?,
     /** 点按切控件由 `ReaderScreen` 的 pointerInput 负责，本组件不使用，只为调用形状统一。 */
     onToggleControls: () -> Unit,
     /** 进入时的章内位置（0..1，段落比例）：续读 / 重进 / 切换翻页方式都靠它定位。 */
@@ -544,7 +546,7 @@ fun ContinuousReader(
 
     val topInset = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
     val bottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-    val lineMetrics = ReaderLineMetrics.from(settings)
+    val lineMetrics = ReaderLineMetrics.from(settings, fontPath)
     val paragraphGap = lineMetrics.paragraphGapDp(LocalDensity.current)
     val titleStyle = MaterialTheme.typography.titleLarge.copy(
         fontSize = (settings.fontSize + 4).sp,

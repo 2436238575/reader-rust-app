@@ -1,0 +1,14 @@
+MiSans
+======
+
+Copyright © Xiaomi Inc.
+来源：https://hyperos.mi.com/font/details/sc （官方下载页）
+
+授权说明（官方口径）：
+- 小米官方宣布 MiSans 面向全社会**免费商用**（含商业用途）。
+- 字体文件**不得修改**、不得单独再分发/售卖；可以随软件一起分发**未修改的原始文件**。
+
+本应用的使用方式：
+- 以未修改的原始 TTF 形式内置 `MiSans-Regular`（`res/font/misans_regular.ttf`），
+  仅用于阅读器正文字体渲染，不单独提供字体下载、不做子集化或改名。
+- 如需其他字重或最新版本，请从小米官网下载。

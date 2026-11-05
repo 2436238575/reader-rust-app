@@ -1,6 +1,7 @@
 package org.example.reader.core
 
 import coil3.ImageLoader
+import org.example.reader.core.font.FontStore
 import org.example.reader.core.net.ReaderApi
 import org.example.reader.core.recent.RecentBooksStore
 import org.example.reader.core.session.SessionStore
@@ -42,6 +43,9 @@ interface AppDependencies {
      * 快照里的原文与进度换算都不经过它。
      */
     val chineseConverter: ChineseConverter
+
+    /** 需要按需下载的字体（鸿蒙/小米）的本地缓存与下载。 */
+    val fonts: FontStore
 
     /** 清理会话凭据（Cookie + 本地登录提示）。 */
     fun clearSession()

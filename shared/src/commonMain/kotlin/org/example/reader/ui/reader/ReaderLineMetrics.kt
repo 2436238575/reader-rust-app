@@ -41,12 +41,12 @@ data class ReaderLineMetrics(
 
     companion object {
         /** 从原始设置计算字号、行高、段距与恒为两个字宽的首行缩进。 */
-        fun from(settings: ReaderSettings): ReaderLineMetrics = ReaderLineMetrics(
+        fun from(settings: ReaderSettings, fontPath: String? = null): ReaderLineMetrics = ReaderLineMetrics(
             fontSize = settings.fontSize.sp,
             lineHeight = (settings.fontSize * settings.lineHeight).sp,
             paragraphSpacing = (settings.fontSize * settings.paragraphSpacing).sp,
             firstLineIndent = (settings.fontSize * 2).sp,
-            fontFamily = settings.fontFamily.toFontFamily(),
+            fontFamily = settings.fontFamily.toFontFamily(fontPath),
             // 先夹到设置域（100..900）再构造：FontWeight(Int) 只接受 1..1000，
             // 而且超出设置域的值没有对应的 UI 语义（手改 prefs / 跨端同步都可能出现）
             fontWeight = FontWeight(
@@ -62,12 +62,7 @@ data class ReaderLineMetrics(
 /**
  * 字体族映射。
  *
- * 只用 Compose 的通用字族：Android 没有内置楷体/仿宋，硬映射到不存在的字族
- * 会静默回落到默认字体，用户点了「楷体」却看不出变化。
+ * 系统字体用 Compose 的通用字族；鸿蒙/小米是内置的 TTF 资源，只在 Android 侧能解析，
+ * 所以本函数是 expect（commonMain 不引用 `R`）。
  */
-internal fun ReaderFont.toFontFamily(): FontFamily = when (this) {
-    ReaderFont.System -> FontFamily.Default
-    ReaderFont.Heiti -> FontFamily.SansSerif
-    ReaderFont.Songti -> FontFamily.Serif
-    ReaderFont.Mono -> FontFamily.Monospace
-}
+internal expect fun ReaderFont.toFontFamily(cachedPath: String? = null): FontFamily

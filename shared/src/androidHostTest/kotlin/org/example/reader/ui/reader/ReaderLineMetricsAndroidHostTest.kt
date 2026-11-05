@@ -73,6 +73,20 @@ class ReaderLineMetricsAndroidHostTest {
     }
 
     @Test
+    fun remoteFontsFallBackUntilAFileIsCached() {
+        listOf(ReaderFont.Harmony, ReaderFont.MiSans).forEach { font ->
+            // 未下载：必须安全回退系统字族，不能抛异常或显示空白
+            assertEquals(
+                FontFamily.Default,
+                ReaderLineMetrics.from(ReaderSettings(fontFamily = font)).fontFamily,
+                "$font 未下载时应回退系统字体",
+            )
+            // 有缓存路径时会构造文件字体族；该路径依赖 android.graphics.Typeface，
+            // 主机单测没有实现（会抛 "not mocked"），由 AVD 实机覆盖
+        }
+    }
+
+    @Test
     fun outOfRangeWeightIsClampedBeforeConstructingFontWeight() {
         // FontWeight(Int) 只接受 1..1000，越界值必须在这里夹住而不是让整页排版抛异常
         assertEquals(100, ReaderLineMetrics.from(ReaderSettings(fontWeight = -50)).fontWeight.weight)

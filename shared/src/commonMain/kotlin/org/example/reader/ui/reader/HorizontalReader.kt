@@ -68,6 +68,8 @@ fun HorizontalReader(
     palette: ReaderPalette,
     imageLoader: ImageLoader,
     onImageClick: (String) -> Unit,
+    /** 已下载字体的本地路径；未下载时为空，回退系统字族。 */
+    fontPath: String?,
     onPrevChapter: () -> Unit,
     onNextChapter: () -> Unit,
     onToggleControls: () -> Unit,
@@ -101,7 +103,7 @@ fun HorizontalReader(
         lineHeight = ((settings.fontSize + 4) * 1.4f).sp,
         color = palette.text,
     )
-    val lineMetrics = ReaderLineMetrics.from(settings)
+    val lineMetrics = ReaderLineMetrics.from(settings, fontPath)
     val bodyStyle = lineMetrics.bodyStyle(palette.text)
 
     BoxWithConstraints(modifier.fillMaxSize().padding(top = topInset, bottom = bottomInset)) {

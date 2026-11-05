@@ -60,8 +60,9 @@ class ReaderSettingsStoreAndroidHostTest {
 
     @Test
     fun bundledFontKeysRoundTripAndFallBack() {
-        assertEquals(ReaderFont.Harmony, ReaderFont.fromKey("harmony"))
         assertEquals(ReaderFont.MiSans, ReaderFont.fromKey("misans"))
+        // 已移除的「鸿蒙」旧配置要安全回落，不能崩也不能选中一个不存在的分支
+        assertEquals(ReaderFont.System, ReaderFont.fromKey("harmony"))
         // 未知值回落系统字体，不能让渲染层拿到一个不存在的分支
         assertEquals(ReaderFont.System, ReaderFont.fromKey("comic-sans"))
         assertEquals(ReaderFont.System, ReaderFont.fromKey(null))
@@ -92,7 +93,7 @@ class ReaderSettingsStoreAndroidHostTest {
     fun settingsSurviveReload() {
         val fake = FakeKeyValueStore()
         val first = ReaderSettingsStore(fake)
-        first.setFontFamily(ReaderFont.Harmony)
+        first.setFontFamily(ReaderFont.MiSans)
         first.setFontWeight(700)
         first.setPageWidth(450)
         first.setChineseMode(ChineseMode.Traditional)
@@ -101,7 +102,7 @@ class ReaderSettingsStoreAndroidHostTest {
 
         val reloaded = ReaderSettingsStore(fake).state.value
 
-        assertEquals(ReaderFont.Harmony, reloaded.fontFamily)
+        assertEquals(ReaderFont.MiSans, reloaded.fontFamily)
         assertEquals(700, reloaded.fontWeight)
         assertEquals(450, reloaded.pageWidth)
         assertEquals(ChineseMode.Traditional, reloaded.chineseMode)

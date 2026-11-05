@@ -104,7 +104,7 @@ fun ReaderSettingsPanel(
     onFontFamilyChange: (ReaderFont) -> Unit,
     /** 字重 100..900，步进 100。 */
     onFontWeightChange: (Int) -> Unit,
-    /** 鸿蒙/小米字体的下载状态（进度/失败），系统字族时为 Idle。 */
+    /** 小米字体的下载状态（进度/失败），系统字族时为 Idle。 */
     fontDownload: FontDownloadState,
     onFontRetry: () -> Unit,
     onFontCancel: () -> Unit,
@@ -402,8 +402,8 @@ private fun FontFamilyRow(font: ReaderFont, onSelect: (ReaderFont) -> Unit) {
         }
         Spacer(Modifier.height(4.dp))
         Text(
-            text = "黑体/宋体/等宽对应系统 sans/serif/mono；鸿蒙、小米按字重联网下载" +
-                "（每个约 8MB，未修改原始字体，华为/小米免费商用，已下载的离线可用）；" +
+            text = "黑体/宋体/等宽对应系统 sans/serif/mono；小米按字重联网下载" +
+                "（每个约 7.5MB，未修改原始字体，免费商用，已下载的离线可用）；" +
                 "楷体、仿宋按宋体呈现。",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,

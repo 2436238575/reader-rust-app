@@ -22,15 +22,6 @@ data class FontWeightFile(val fileName: String, val weight: Int)
  */
 val ReaderFont.downloadableWeights: List<FontWeightFile>
     get() = when (this) {
-        ReaderFont.Harmony -> listOf(
-            FontWeightFile("HarmonyOS_Sans_SC_Thin.ttf", 250),
-            FontWeightFile("HarmonyOS_Sans_SC_Light.ttf", 300),
-            FontWeightFile("HarmonyOS_Sans_SC_Regular.ttf", 400),
-            FontWeightFile("HarmonyOS_Sans_SC_Medium.ttf", 500),
-            FontWeightFile("HarmonyOS_Sans_SC_Bold.ttf", 700),
-            FontWeightFile("HarmonyOS_Sans_SC_Black.ttf", 900),
-        )
-
         ReaderFont.MiSans -> listOf(
             FontWeightFile("MiSans-Thin.ttf", 100),
             FontWeightFile("MiSans-ExtraLight.ttf", 200),

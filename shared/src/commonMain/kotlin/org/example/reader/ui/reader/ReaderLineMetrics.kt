@@ -62,7 +62,7 @@ data class ReaderLineMetrics(
 /**
  * 字体族映射。
  *
- * 系统字体用 Compose 的通用字族；鸿蒙/小米是内置的 TTF 资源，只在 Android 侧能解析，
+ * 系统字体用 Compose 的通用字族；小米 MiSans 是本地下载的 TTF，只在 Android 侧能解析，
  * 所以本函数是 expect（commonMain 不引用 `R`）。
  */
 internal expect fun ReaderFont.toFontFamily(cachedPath: String? = null): FontFamily

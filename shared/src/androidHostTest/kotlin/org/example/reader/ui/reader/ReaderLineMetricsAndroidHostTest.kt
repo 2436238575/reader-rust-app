@@ -74,7 +74,7 @@ class ReaderLineMetricsAndroidHostTest {
 
     @Test
     fun remoteFontsFallBackUntilAFileIsCached() {
-        listOf(ReaderFont.Harmony, ReaderFont.MiSans).forEach { font ->
+        listOf(ReaderFont.MiSans).forEach { font ->
             // 未下载：必须安全回退系统字族，不能抛异常或显示空白
             assertEquals(
                 FontFamily.Default,

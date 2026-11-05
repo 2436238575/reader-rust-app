@@ -9,9 +9,9 @@ import java.io.File
 /**
  * 字体族映射（Android 侧）。
  *
- * 鸿蒙 / 小米不随包内置：仓库 `fonts/` 存**未修改的原始 TTF**，首次选用时由
+ * 小米 MiSans 不随包内置：仓库 `fonts/` 存**未修改的原始 TTF**，首次选用时由
  * `FontStore` 下载到应用私有目录，`cachedPath` 为 null 时回退系统字体。
- * 两家许可都禁止修改字体文件（因此不做子集化）并要求标注来源；
+ * 许可禁止修改字体文件（因此不做子集化）并要求标注来源；
  * 下载完成后 `FontStore.revision` 自增，阅读器重组即可解析到真实字面。
  * 只有 Regular 一个字重，字重 700 时不会合成加粗（系统字族才会）。
  */
@@ -20,9 +20,9 @@ internal actual fun ReaderFont.toFontFamily(cachedPath: String?): FontFamily = w
     ReaderFont.Heiti -> FontFamily.SansSerif
     ReaderFont.Songti -> FontFamily.Serif
     ReaderFont.Mono -> FontFamily.Monospace
-    // 鸿蒙/小米按需下载：没有缓存文件时回退系统字体（UI 显示下载提示），
+    // 小米按需下载：没有缓存文件时回退系统字体（UI 显示下载提示），
     // 下载完成后 revision 自增触发重组，这里就能解析到真实字体
-    ReaderFont.Harmony, ReaderFont.MiSans -> cachedPath
+    ReaderFont.MiSans -> cachedPath
         ?.takeIf { it.isNotBlank() }
         ?.let(::fileFontFamily)
         ?: FontFamily.Default

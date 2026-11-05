@@ -15,21 +15,6 @@ import org.example.reader.core.settings.ReaderFont
 class FontWeightFileAndroidHostTest {
 
     @Test
-    fun harmonyMapsConfiguredWeightsToNearestFile() {
-        assertEquals("HarmonyOS_Sans_SC_Thin.ttf", file(ReaderFont.Harmony, 100))
-        assertEquals("HarmonyOS_Sans_SC_Thin.ttf", file(ReaderFont.Harmony, 200))
-        assertEquals("HarmonyOS_Sans_SC_Light.ttf", file(ReaderFont.Harmony, 300))
-        assertEquals("HarmonyOS_Sans_SC_Regular.ttf", file(ReaderFont.Harmony, 400))
-        assertEquals("HarmonyOS_Sans_SC_Medium.ttf", file(ReaderFont.Harmony, 500))
-        // 600 在 Medium(500)/Bold(700) 之间距离相同：取更重的一侧
-        assertEquals("HarmonyOS_Sans_SC_Bold.ttf", file(ReaderFont.Harmony, 600))
-        assertEquals("HarmonyOS_Sans_SC_Bold.ttf", file(ReaderFont.Harmony, 700))
-        // 800 同理取 Black(900)
-        assertEquals("HarmonyOS_Sans_SC_Black.ttf", file(ReaderFont.Harmony, 800))
-        assertEquals("HarmonyOS_Sans_SC_Black.ttf", file(ReaderFont.Harmony, 900))
-    }
-
-    @Test
     fun miSansMapsConfiguredWeightsToNearestFile() {
         assertEquals("MiSans-Thin.ttf", file(ReaderFont.MiSans, 100))
         assertEquals("MiSans-ExtraLight.ttf", file(ReaderFont.MiSans, 200))
@@ -44,17 +29,6 @@ class FontWeightFileAndroidHostTest {
 
     @Test
     fun fileNamesAndWeightsMatchTheRepositoryLayout() {
-        assertEquals(
-            listOf(
-                "HarmonyOS_Sans_SC_Thin.ttf" to 250,
-                "HarmonyOS_Sans_SC_Light.ttf" to 300,
-                "HarmonyOS_Sans_SC_Regular.ttf" to 400,
-                "HarmonyOS_Sans_SC_Medium.ttf" to 500,
-                "HarmonyOS_Sans_SC_Bold.ttf" to 700,
-                "HarmonyOS_Sans_SC_Black.ttf" to 900,
-            ),
-            ReaderFont.Harmony.downloadableWeights.map { it.fileName to it.weight },
-        )
         assertEquals(
             listOf(
                 "MiSans-Thin.ttf" to 100,
@@ -77,17 +51,16 @@ class FontWeightFileAndroidHostTest {
             assertTrue(font.downloadableWeights.isEmpty())
             assertNull(font.fileForWeight(400))
         }
-        assertTrue(ReaderFont.Harmony.isDownloadable)
         assertTrue(ReaderFont.MiSans.isDownloadable)
     }
 
     @Test
     fun downloadProgressFractionHandlesUnknownTotal() {
-        assertEquals(0.5f, FontDownloadState.Running(ReaderFont.Harmony, 400, 4, 8).fraction)
-        assertNull(FontDownloadState.Running(ReaderFont.Harmony, 400, 4, 0).fraction)
+        assertEquals(0.5f, FontDownloadState.Running(ReaderFont.MiSans, 400, 4, 8).fraction)
+        assertNull(FontDownloadState.Running(ReaderFont.MiSans, 400, 4, 0).fraction)
         assertEquals(
             1f,
-            FontDownloadState.Running(ReaderFont.Harmony, 400, 12, 8).fraction,
+            FontDownloadState.Running(ReaderFont.MiSans, 400, 12, 8).fraction,
             "超出 total 时也要夹到 1",
         )
     }

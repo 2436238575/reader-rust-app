@@ -250,7 +250,7 @@ fun ReaderScreen(
         scope.launch { snackbarHostState.showSnackbar(message) }
     }
 
-    // 需要联网下载的字体（鸿蒙/小米）：按「字体 + 字重」缓存，revision 变化触发重组
+    // 需要联网下载的字体（小米 MiSans）：按「字体 + 字重」缓存，revision 变化触发重组
     val fontRevision by deps.fonts.revision.collectAsStateWithLifecycle()
     val fontDownload by deps.fonts.state.collectAsStateWithLifecycle()
     var fontRetry by remember { mutableStateOf(0) }

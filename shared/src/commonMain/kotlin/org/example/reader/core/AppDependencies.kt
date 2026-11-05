@@ -44,7 +44,7 @@ interface AppDependencies {
      */
     val chineseConverter: ChineseConverter
 
-    /** 需要按需下载的字体（鸿蒙/小米）的本地缓存与下载。 */
+    /** 需要按需下载的字体（小米 MiSans）的本地缓存与下载。 */
     val fonts: FontStore
 
     /** 清理会话凭据（Cookie + 本地登录提示）。 */

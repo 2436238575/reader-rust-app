@@ -1,8 +1,10 @@
 package org.example.reader.ui.reader
 
+import kotlin.math.roundToInt
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -233,6 +235,131 @@ class ContinuousTrackerAndroidHostTest {
                 key = null,
                 currentChapter = 13,
                 totalParagraphs = 22,
+            ),
+        )
+    }
+
+    @Test
+    fun scrollStructureChangeInvalidatesOldGenerationBeforeAnyNewLayoutArrives() {
+        val tracker = ContinuousTracker(initialChapter = 14, initialHideReadChapters = false)
+        val oldGeneration = tracker.beginRestore()
+        assertTrue(tracker.markAnchorSucceeded(oldGeneration, chapter = 14))
+        assertFalse(tracker.suppress)
+
+        tracker.requestStructureRestore(chapter = 14, hideReadChapters = true)
+
+        assertTrue(tracker.hideReadChapters)
+        assertTrue(tracker.suppress)
+        assertEquals(14, tracker.pendingAnchor)
+        assertTrue(tracker.generation > oldGeneration)
+        assertFalse(tracker.markAnchorSucceeded(oldGeneration, chapter = 19))
+        assertFalse(tracker.markAnchorFailed(oldGeneration))
+        assertEquals(14, tracker.expected)
+    }
+
+    @Test
+    fun staleAndPlaceholderSamplesCannotChangeChapterOrProduceSavedPosition() {
+        val oldPosition = ContinuousVisiblePosition(key = "p:16:6", index = 82, offset = 0)
+        val oldSample = ContinuousPositionSample(oldPosition, total = 100, generation = 3)
+        assertNull(
+            continuousPositionForSync(
+                sample = oldSample,
+                currentGeneration = 4,
+                currentPosition = oldPosition,
+                currentTotal = 100,
+            ),
+        )
+
+        val pendingPosition = ContinuousVisiblePosition(key = "h:19", index = 4, offset = 0)
+        val pendingSample = ContinuousPositionSample(pendingPosition, total = 0, generation = 4)
+        assertNull(
+            continuousPositionForSync(
+                sample = pendingSample,
+                currentGeneration = 4,
+                currentPosition = pendingPosition,
+                currentTotal = 0,
+            ),
+        )
+    }
+
+    @Test
+    fun naturalCrossThenLateChapter19SampleCannotPolluteFlushOrReopenPosition() {
+        val generation = 4
+        val chapter17 = ContinuousVisiblePosition(key = "p:16:40", index = 137, offset = 52)
+        var committed = ContinuousReadingPosition(chapter = 15, fraction = 0.2f)
+
+        // 真实上滑到第17章：当前 layout 与 loaded total 一致，允许提交16/0.4。
+        continuousPositionForSync(
+            sample = ContinuousPositionSample(chapter17, total = 100, generation = generation),
+            currentGeneration = generation,
+            currentPosition = chapter17,
+            currentTotal = 100,
+        )?.let { committed = it }
+        assertEquals(16, committed.chapter)
+        assertEquals(0.4f, committed.fraction)
+
+        val oldChapter19 = ContinuousPositionSample(
+            position = ContinuousVisiblePosition(key = "p:18:741", index = 208, offset = 0),
+            total = 10_000,
+            generation = generation - 1,
+        )
+        // 旧代际样本被拒绝，不能调用 VM 的 syncContinuousPosition。
+        assertNull(
+            continuousPositionForSync(
+                sample = oldChapter19,
+                currentGeneration = generation,
+                currentPosition = chapter17,
+                currentTotal = 10_000,
+            ),
+        )
+
+        // 即使迟到样本同代，其排队位置与当前第17章视口不一致，仍必须拒绝。
+        assertNull(
+            continuousPositionForSync(
+                sample = oldChapter19.copy(generation = generation),
+                currentGeneration = generation,
+                currentPosition = chapter17,
+                currentTotal = 10_000,
+            ),
+        )
+
+        // flushProgress 读取仍是 currentIndex=16 × lastFraction=0.4；重进也从该章恢复。
+        val flushedIndex = committed.chapter
+        val flushedPosition = (committed.fraction * 10_000).roundToInt()
+        assertEquals(16, flushedIndex)
+        assertEquals(4_000, flushedPosition)
+        assertNotEquals(18, flushedIndex)
+        assertNotEquals(741, flushedPosition)
+    }
+
+    @Test
+    fun pendingToHeaderSameKeyNeedsLoadedTotalAndCurrentLayout() {
+        val header = ContinuousVisiblePosition(key = "h:14", index = 0, offset = 48)
+        val loadedHeader = ContinuousPositionSample(header, total = 80, generation = 4)
+
+        assertNull(
+            continuousPositionForSync(
+                sample = loadedHeader,
+                currentGeneration = 4,
+                currentPosition = header.copy(index = 9),
+                currentTotal = 80,
+            ),
+        )
+        assertNull(
+            continuousPositionForSync(
+                sample = loadedHeader,
+                currentGeneration = 4,
+                currentPosition = header,
+                currentTotal = 0,
+            ),
+        )
+        assertEquals(
+            ContinuousReadingPosition(chapter = 14, fraction = 0f),
+            continuousPositionForSync(
+                sample = loadedHeader,
+                currentGeneration = 4,
+                currentPosition = header,
+                currentTotal = 80,
             ),
         )
     }

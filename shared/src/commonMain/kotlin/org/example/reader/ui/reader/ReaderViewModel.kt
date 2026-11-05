@@ -14,6 +14,7 @@ import kotlinx.coroutines.launch
 import org.example.reader.core.AppDependencies
 import org.example.reader.core.model.Book
 import org.example.reader.core.model.BookChapter
+import org.example.reader.core.model.ChapterBlockBuilder
 import org.example.reader.core.model.ChapterContent
 import org.example.reader.core.net.ApiResult
 import org.example.reader.core.util.nowMillis
@@ -24,11 +25,10 @@ data class ReaderUiState(
     val book: Book? = null,
     val chapters: List<BookChapter> = emptyList(),
     val currentIndex: Int = 0,
-    val paragraphs: List<String> = emptyList(),
+    /** 当前已应用正文的不可变快照；章号、完整来源与块列表同批替换。 */
+    val body: ChapterBlockSnapshot? = null,
     val isLoadingContent: Boolean = false,
     val error: String? = null,
-    /** 正文来自用户编辑版（而非上游）；界面上给个轻标记。 */
-    val isEdited: Boolean = false,
     /**
      * 一次性 UI 滚动指令（0..1），**不是位置源**。
      *
@@ -37,14 +37,12 @@ data class ReaderUiState(
      * 它不能当位置读：残留值会在重进阅读器时把位置拽回旧章旧处，甚至把进度冲成 0。
      */
     val pendingScrollFraction: Float? = null,
-    /**
-     * `paragraphs` 属于哪一章。
-     *
-     * 换章时 `currentIndex` 会先变、正文后到；分页/定位必须等两者一致，
-     * 否则会拿上一章的正文排版并提前消费掉恢复位置。
-     */
-    val contentIndex: Int = -1,
 ) {
+    val blocks get() = body?.blocks.orEmpty()
+    /** 正文所属章；空态保持 -1。 */
+    val contentIndex: Int get() = body?.chapterIndex ?: -1
+    /** 正文是否来自用户编辑版，由同一份快照派生。 */
+    val isEdited: Boolean get() = body?.source?.edited ?: false
     val currentChapter: BookChapter? get() = chapters.getOrNull(currentIndex)
     val hasPrev: Boolean get() = currentIndex > 0
     val hasNext: Boolean get() = currentIndex < chapters.lastIndex
@@ -111,6 +109,14 @@ class ReaderViewModel(
 
     /** 当前章内位置（0..1），滚动时持续更新，落库时换算成万分比。 */
     private var lastFraction = 0f
+
+    /**
+     * 本次位置是否来自「上一章 → 程序化章末恢复」。
+     *
+     * 连续列表会把 1f 锚定成最后正文块，不能从比例反推此语义；标记只用于紧接着的
+     * 模式交接，真实用户位置回传立即清除。章内位置仍只有 [lastFraction] 一个真源。
+     */
+    private var chapterEndRestore = false
 
     /** 上次上报时间：滚动过程中按 [PROGRESS_SAVE_INTERVAL_MS] 节流。 */
     private var lastSavedAt = 0L
@@ -186,9 +192,11 @@ class ReaderViewModel(
         // 章号与位置必须同批更新（本段到 _state.update 之间不得有挂起点）：
         // 挂起的补存写的是「currentIndex × lastFraction」，只改章号就会把脏组合落库
         val previousFraction = lastFraction
+        val previousChapterEndRestore = chapterEndRestore
         pendingSaveJob?.cancel()
         pendingSaveJob = null
         lastFraction = restore
+        chapterEndRestore = restore == 1f
         _state.update {
             it.copy(
                 isLoadingContent = true,
@@ -228,6 +236,7 @@ class ReaderViewModel(
                 is ApiResult.Failure -> onContentFailure(
                     message = result.message,
                     fallbackFraction = previousFraction,
+                    fallbackChapterEndRestore = previousChapterEndRestore,
                     isRefresh = force,
                 )
             }
@@ -241,7 +250,12 @@ class ReaderViewModel(
      * 正文实际所属的那一章，同时把 `lastFraction` 退回离场位置——「章号 × 位置」必须始终成对，
      * 否则退出时的 `flushProgress()` 会把旧章位置写进新章。只有首次加载（还没有正文）才是真空态。
      */
-    private fun onContentFailure(message: String, fallbackFraction: Float, isRefresh: Boolean) {
+    private fun onContentFailure(
+        message: String,
+        fallbackFraction: Float,
+        fallbackChapterEndRestore: Boolean,
+        isRefresh: Boolean,
+    ) {
         // 刷新失败的提示要能与普通加载错误区分（验收要求文案含「刷新」字样）
         val text = if (isRefresh) "刷新失败：$message" else message
         val rollbackTo = _state.value.contentIndex
@@ -249,6 +263,7 @@ class ReaderViewModel(
             pendingSaveJob?.cancel()
             pendingSaveJob = null
             lastFraction = fallbackFraction.coerceIn(0f, 1f)
+            chapterEndRestore = fallbackChapterEndRestore
             _state.update {
                 it.copy(isLoadingContent = false, error = text, currentIndex = rollbackTo)
             }
@@ -273,7 +288,12 @@ class ReaderViewModel(
         restoreFraction: Float,
     ) {
         if (index != _state.value.currentIndex) return
-        val paragraphs = splitParagraphs(content.content)
+        val snapshot = ChapterBlockSnapshot(
+            chapterIndex = index,
+            source = content,
+            blocks = ChapterBlockBuilder.build(content),
+            revision = generation,
+        )
         val restore = restoreFraction.coerceIn(0f, 1f)
         val previousContentIndex = _state.value.contentIndex
         // pendingScrollFraction 只是一次性 UI 滚动指令，不是位置源（真源是 lastFraction）。
@@ -286,10 +306,8 @@ class ReaderViewModel(
         _state.update {
             it.copy(
                 isLoadingContent = false,
-                paragraphs = paragraphs,
-                isEdited = content.edited,
+                body = snapshot,
                 pendingScrollFraction = scrollCommand,
-                contentIndex = index,
             )
         }
         // 最近阅读以「实际读到哪一章」为准（Web 端同样在章节落定后记录）
@@ -424,10 +442,10 @@ class ReaderViewModel(
     }
 
     /**
-     * 保证 `paragraphs` 属于 [ReaderUiState.currentIndex]（不属于就补一次加载）。
+     * 保证 `blocks` 属于 [ReaderUiState.currentIndex]（不属于就补一次加载）。
      *
      * 连续阅读滚动时**只改 `currentIndex`、不动 `contentIndex`**（正文是整块窗口，
-     * `paragraphs` 只是顺手加载的那一章）。一旦切回单章竖排 / 横翻，两种渲染都以
+     * `blocks` 只是顺手加载的那一章）。一旦切回单章竖排 / 横翻，两种渲染都以
      * `contentIndex == currentIndex` 为守卫：没人补这一刀，横翻会停在「正文为空」，
      * 竖排会显示上一章的正文，且没有任何路径会自愈（要等用户点「下一章」）。
      *
@@ -455,13 +473,20 @@ class ReaderViewModel(
      * 只有 [index] 变化才改章号、`book` 的进度字段与最近阅读——连续滚动时每段都会回调，
      * 每段都写一遍最近阅读是纯浪费，也会让「最近阅读」的时间戳变成滚动时间。
      *
-     * **不动 `contentIndex`**：`contentIndex` 的语义是「`paragraphs` 属于哪一章」，
+     * **不动 `contentIndex`**：`contentIndex` 的语义是「`blocks` 属于哪一章」，
      * 用来在换章时卡住排版（正文没到别急着分页）。连续模式下正文是一整块窗口，
-     * `paragraphs` 只是 VM 顺手加载的那一章的副本，与可见位置无关。
+     * `blocks` 只是 VM 顺手加载的那一章的副本，与可见位置无关。
      * 因此**不要**在连续模式里用 `contentIndex != currentIndex` 当守卫——那会一直成立，
      * 把整块正文挡掉。
+     *
+     * [programmaticChapterEnd] 只由恢复协程在原始恢复值为 1f 时传入；普通可见位置
+     * 同步（包括用户自然滚到最后正文块）一律为 false，不能继承章末恢复语义。
      */
-    fun syncContinuousPosition(index: Int, fraction: Float) {
+    fun syncContinuousPosition(
+        index: Int,
+        fraction: Float,
+        programmaticChapterEnd: Boolean = false,
+    ) {
         val state = _state.value
         val chapter = state.chapters.getOrNull(index) ?: return
         val position = fraction.coerceIn(0f, 1f)
@@ -482,6 +507,8 @@ class ReaderViewModel(
             lastSavedAt = 0L
         }
         onScrolled(position)
+        // onScrolled 会清除旧标记；只有本次确为程序化章末恢复才重新建立它。
+        chapterEndRestore = programmaticChapterEnd
     }
 
     // ─── 进度 ──────────────────────────────────────────────────────────────────
@@ -491,6 +518,7 @@ class ReaderViewModel(
      */
     fun onScrolled(fraction: Float) {
         lastFraction = fraction.coerceIn(0f, 1f)
+        chapterEndRestore = false
         val now = nowMillis()
         val elapsed = now - lastSavedAt
         if (elapsed >= PROGRESS_SAVE_INTERVAL_MS) {
@@ -517,14 +545,19 @@ class ReaderViewModel(
      */
     fun currentFraction(): Float = lastFraction
 
+    /** 当前连续阅读位置是否仍带尚未交接的程序化章末语义。 */
+    fun isChapterEndRestore(): Boolean = chapterEndRestore
+
     /**
      * 切换渲染方式前同步真实可见位置，只更新内存真源，不另发一次中间进度请求。
      * 取消旧位置补存；目标渲染器完成定位后会按自己的页首口径接管保存。
+     * 章末标记已被 [modeSwitchFraction] 消费，不能泄漏到后续真实阅读。
      */
     fun onModeSwitchPosition(fraction: Float) {
         pendingSaveJob?.cancel()
         pendingSaveJob = null
         lastFraction = fraction.coerceIn(0f, 1f)
+        chapterEndRestore = false
     }
 
     /** 界面对着 [ReaderUiState.pendingScrollFraction] 滚完一次后调用，避免重复恢复。 */
@@ -535,7 +568,7 @@ class ReaderViewModel(
     /** 离开阅读器/切后台时立即落库，不等节流窗口。 */
     fun flushProgress() {
         val state = _state.value
-        if (state.paragraphs.isEmpty()) return
+        if (state.blocks.isEmpty()) return
         pendingSaveJob?.cancel()
         lastSavedAt = nowMillis()
         persistProgress(state.currentIndex, lastFraction)
@@ -621,18 +654,3 @@ class ReaderViewModel(
         const val PROGRESS_SAVE_INTERVAL_MS = 10_000L
     }
 }
-
-/**
- * 正文按行切段。
- *
- * 后端正文是纯文本 + `\n` 分段，但可能夹带 HTML 片段（配图 `<figure>`）。
- * 这里保留原样交给渲染层判断，不做破坏性清洗——清洗规则属于服务端「净化规则」的职责。
- *
- * 放在文件级（而不是 [ReaderViewModel] 的私有方法里）是因为连续阅读要在渲染层
- * 把取回的正文切成段落：两边必须是**同一套**切分规则，否则
- * 「单章阅读」与「连续阅读」的段落数与段落下标会对不上，进度换算随之偏移。
- */
-internal fun splitParagraphs(content: String): List<String> =
-    content.split('\n')
-        .map { it.trim() }
-        .filter { it.isNotEmpty() }

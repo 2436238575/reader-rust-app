@@ -122,11 +122,6 @@ data class ReaderSettings(
         /** 主题序号合法区间上界。主题表的唯一定义在 [ReaderPalettes]，这里只取长度。 */
         val MAX_THEME_INDEX: Int = ReaderPalettes.lastIndex
     }
-
-    val textLineHeightSp: Float get() = fontSize * lineHeight
-
-    /** 段间额外间距（sp）。与前端 `paragraphSpacing` 的 em 语义一致。 */
-    val paragraphGapSp: Float get() = fontSize * paragraphSpacing
 }
 
 /**

@@ -34,17 +34,16 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextIndent
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
+import org.example.reader.core.model.ChapterBlock
+import org.example.reader.core.model.ChapterBlockBuilder
 import org.example.reader.core.settings.ReaderSettings
-import kotlin.math.roundToInt
 
 /** 连续阅读的窗口半径：当前章前后各 3 章，最多 7 章同时在窗口里。 */
 private const val CONTINUOUS_WINDOW = 3
@@ -144,10 +143,15 @@ fun ContinuousReader(
     val stateRef = rememberUpdatedState(state)
     val hideReadRef = rememberUpdatedState(hideReadChapters)
     val restoreRef = rememberUpdatedState(restoreFraction)
-    val tracker = remember { ContinuousTracker(initialChapter = state.currentIndex) }
+    val tracker = remember {
+        ContinuousTracker(
+            initialChapter = state.currentIndex,
+            initialHideReadChapters = hideReadChapters,
+        )
+    }
 
-    /** 已取到的正文（目录下标 → 段落）。这里是渲染的唯一内容源，VM 的 LRU 只是取数通道。 */
-    val loaded = remember { mutableStateMapOf<Int, List<String>>() }
+    /** 已取到的正文（目录下标 → 原子快照）。这里是渲染的唯一内容源，VM 的 LRU 只是取数通道。 */
+    val loaded = remember { mutableStateMapOf<Int, ChapterBlockSnapshot>() }
 
     /** 在途章节，避免同一章被「进入窗口」重复触发。 */
     val loading = remember { mutableStateMapOf<Int, Boolean>() }
@@ -175,6 +179,12 @@ fun ContinuousReader(
     if (tracker.expected != center) {
         tracker.requestRestore(center)
     }
+    if (tracker.hideReadChapters != hideReadChapters) {
+        // Scroll↔Scroll2 会删除/插入当前章之前的全部 rows，旧扁平下标立即失效。
+        // 同步开启新恢复代际，在锚定当前逻辑块前不允许任何旧样本改章或落库。
+        tracker.requestStructureRestore(center, hideReadChapters)
+        restored = false
+    }
 
     /** 窗口内需要钉住的章：它们正在屏幕上，不能被 VM 的 LRU 裁掉。 */
     fun pinnedWindow(): Set<Int> {
@@ -186,7 +196,7 @@ fun ContinuousReader(
     }
 
     /** 等某章正文到位；超时返回 null（网络挂了不该把锚定协程永久挂住）。 */
-    suspend fun awaitParagraphs(index: Int, timeoutMs: Long = ANCHOR_WAIT_MS): List<String>? =
+    suspend fun awaitSnapshot(index: Int, timeoutMs: Long = ANCHOR_WAIT_MS): ChapterBlockSnapshot? =
         withTimeoutOrNull(timeoutMs) {
             snapshotFlow { loaded[index] }.first { it != null }
         }
@@ -204,15 +214,21 @@ fun ContinuousReader(
             // loaded，这里再发一条就是同一章两条请求。等不到（VM 那条失败，或者此刻
             // isLoadingContent 指的是别的章）就自己取一次——**等待超时不等于加载失败**。
             if (stateRef.value.isLoadingContent && stateRef.value.currentIndex == index) {
-                if (awaitParagraphs(index, timeoutMs = VM_REQUEST_WAIT_MS) != null) return
+                if (awaitSnapshot(index, timeoutMs = VM_REQUEST_WAIT_MS) != null) return
             }
             val content = viewModel.fetchChapterForContinuous(index, pinned = pinnedWindow())
             if (content == null) {
                 failed[index] = true
                 return
             }
-            // 与 VM 用同一套切分规则，段落下标才能跨模块换算进度
-            loaded[index] = splitParagraphs(content.content)
+            // 在 ChapterContent 边界经唯一 Builder 建快照，章号与载荷同批写入。
+            val chapterSnapshot = ChapterBlockSnapshot(
+                chapterIndex = index,
+                source = content,
+                blocks = ChapterBlockBuilder.build(content),
+            )
+            check(chapterSnapshot.chapterIndex == index) { "Continuous snapshot chapter mismatch" }
+            loaded[index] = chapterSnapshot
             failed.remove(index)
         } finally {
             loading.remove(index)
@@ -285,11 +301,11 @@ fun ContinuousReader(
     suspend fun anchorStable(
         chapter: Int,
         fraction: Float,
-        paragraphs: List<String>,
+        blocks: List<ChapterBlock>,
         generation: Int,
         attempts: Int = ANCHOR_ATTEMPTS,
     ): ContinuousAnchorResult {
-        val key = restoreAnchorKey(chapter, fraction, paragraphs.size)
+        val key = restoreAnchorKey(chapter, fraction, blocks.size)
         repeat(attempts.coerceAtLeast(1)) {
             if (!tracker.isRestoring(generation)) return ContinuousAnchorResult.USER_CANCELLED
             val target = awaitItemIndex(key)
@@ -346,17 +362,19 @@ fun ContinuousReader(
 
     // VM 手里的那一章（进入时的当前章 / 目录跳章 / 刷新本章）直接镜像过来，不必再取一次。
     // 独立 effect：它有自己的节拍，跟窗口预取互不阻塞。
-    LaunchedEffect(state.contentIndex, state.paragraphs) {
-        val index = state.contentIndex
-        if (index < 0 || state.paragraphs.isEmpty()) return@LaunchedEffect
-        loaded[index] = state.paragraphs
+    LaunchedEffect(state.body) {
+        val snapshot = state.body ?: return@LaunchedEffect
+        val index = snapshot.chapterIndex
+        if (index < 0 || snapshot.blocks.isEmpty()) return@LaunchedEffect
+        check(index == state.contentIndex) { "Continuous mirror snapshot chapter mismatch" }
+        loaded[index] = snapshot
         failed.remove(index)
     }
 
     // ─── 定位 ──────────────────────────────────────────────────────────────────
     // 进入与外部跳章走同一条路。RESTORING 与 FAILED 都压住进度；ANCHORED 与
     // USER_TAKEN_OVER 才允许同步。拖动开始只取消本轮定位，不会直接放开旧快照。
-    LaunchedEffect(center, chapters.size) {
+    LaunchedEffect(center, chapters.size, hideReadChapters) {
         val jumpTarget = tracker.pendingAnchor
         if (jumpTarget == null && restored) return@LaunchedEffect
         if (chapters.isEmpty()) return@LaunchedEffect
@@ -372,8 +390,8 @@ fun ContinuousReader(
         if (!tracker.isRestoring(generation)) return@LaunchedEffect
         val prefetchStable = awaitStablePrefetchWindow(chapter)
         if (!tracker.isRestoring(generation)) return@LaunchedEffect
-        val paragraphs = awaitParagraphs(chapter)
-        if (paragraphs == null) {
+        val snapshot = awaitSnapshot(chapter)
+        if (snapshot == null || snapshot.chapterIndex != chapter) {
             failRestore(generation)
             return@LaunchedEffect
         }
@@ -381,7 +399,7 @@ fun ContinuousReader(
             anchorStable(
                 chapter = chapter,
                 fraction = fraction,
-                paragraphs = paragraphs,
+                blocks = snapshot.blocks,
                 generation = generation,
                 attempts = if (prefetchStable) ANCHOR_ATTEMPTS else 1,
             )
@@ -392,10 +410,14 @@ fun ContinuousReader(
                 viewModel.consumePendingScroll()
                 // 补一次上报：定位期间的回传都被丢弃了，而快照流有去重、不会重吐同一个值。
                 val anchored = parseContinuousKey(
-                    restoreAnchorKey(chapter, fraction, paragraphs.size),
+                    restoreAnchorKey(chapter, fraction, snapshot.blocks.size),
                 )?.second ?: 0
-                val position = if (paragraphs.isEmpty()) 0f else anchored.toFloat() / paragraphs.size
-                viewModel.syncContinuousPosition(chapter, position)
+                viewModel.syncContinuousPosition(
+                    index = chapter,
+                    fraction = blockFraction(anchored, snapshot.blocks.size),
+                    // 块比例只描述可见落点；原始 1f 的「上一章到章末」语义必须跨交接保留。
+                    programmaticChapterEnd = fraction == 1f,
+                )
             }
 
             ContinuousAnchorResult.FAILED -> failRestore(generation)
@@ -435,23 +457,27 @@ fun ContinuousReader(
             val chapter = position.key?.let { parseContinuousKey(it)?.first }
             ContinuousPositionSample(
                 position = position,
-                total = chapter?.let { loaded[it]?.size } ?: 0,
+                total = chapter?.let { loaded[it]?.blocks?.size } ?: 0,
+                generation = tracker.generation,
             )
         }.collect { sample ->
             val key = sample.position.key ?: return@collect
-            val (chapter, paragraph) = parseContinuousKey(key) ?: return@collect
-            // snapshotFlow 可能投递排队中的旧值；位置与段数都必须仍和当前状态一致。
+            val chapter = parseContinuousKey(key)?.first ?: return@collect
+            // 代际、位置和段数必须同时仍有效；占位章 total=0 永不产生阅读位置。
             val currentPosition = currentVisiblePosition()
-            if (sample.position != currentPosition || sample.total != (loaded[chapter]?.size ?: 0)) {
-                return@collect
-            }
+            val position = continuousPositionForSync(
+                sample = sample,
+                currentGeneration = tracker.generation,
+                currentPosition = currentPosition,
+                currentTotal = loaded[chapter]?.blocks?.size ?: 0,
+            ) ?: return@collect
             if (tracker.phase == ContinuousRestorePhase.DRAG_PENDING) {
                 // 只有拖动后出现了新的、真实的可见位置才解除抑制；DragStart 本身不算。
-                if (sample.total <= 0 || !listState.isScrollInProgress) return@collect
+                if (!listState.isScrollInProgress) return@collect
                 if (!tracker.completeUserTakeOver(
                         observed = sample.position,
                         current = currentPosition,
-                        chapter = chapter,
+                        chapter = position.chapter,
                         isScrollInProgress = true,
                     )
                 ) {
@@ -461,12 +487,9 @@ fun ContinuousReader(
             } else {
                 if (tracker.suppress || !restored) return@collect
             }
-            // 段数未知的占位章不是合法阅读位置；FAILED 在上方持续抑制旧位置写库。
-            if (sample.total <= 0) return@collect
-            val fraction = (paragraph.toFloat() / sample.total).coerceIn(0f, 1f)
             // ANCHORED / USER_TAKEN_OVER 下允许正常前进与后退，不按方向封禁进度。
-            tracker.expected = chapter
-            viewModel.syncContinuousPosition(chapter, fraction)
+            tracker.expected = position.chapter
+            viewModel.syncContinuousPosition(position.chapter, position.fraction)
         }
     }
 
@@ -482,14 +505,14 @@ fun ContinuousReader(
     if (lowerBound <= upperBound) {
         for (chapter in lowerBound..upperBound) {
             if (hideReadChapters && chapter < center) continue
-            val paragraphs = loaded[chapter]
+            val snapshot = loaded[chapter]
             val title = chapters[chapter].title
-            if (paragraphs == null) {
+            if (snapshot == null || snapshot.chapterIndex != chapter) {
                 rows += ContinuousItem.Pending(chapter, title, failed[chapter] == true)
             } else {
                 rows += ContinuousItem.Header(chapter, title)
-                paragraphs.forEachIndexed { index, text ->
-                    rows += ContinuousItem.Body(chapter, index, text)
+                snapshot.blocks.forEach { block ->
+                    rows += ContinuousItem.Body(chapter, block)
                 }
             }
         }
@@ -498,18 +521,13 @@ fun ContinuousReader(
 
     val topInset = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
     val bottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-    val paragraphGap = with(LocalDensity.current) { settings.paragraphGapSp.sp.toDp() }
+    val lineMetrics = ReaderLineMetrics.from(settings)
+    val paragraphGap = lineMetrics.paragraphGapDp(LocalDensity.current)
     val titleStyle = MaterialTheme.typography.titleLarge.copy(
         fontSize = (settings.fontSize + 4).sp,
         color = palette.text,
     )
-    val bodyStyle = TextStyle(
-        fontSize = settings.fontSize.sp,
-        lineHeight = settings.textLineHeightSp.sp,
-        color = palette.text,
-        // 首行缩进两个字宽，与单章竖排 / 横翻保持一致
-        textIndent = TextIndent(firstLine = (settings.fontSize * 2).sp),
-    )
+    val bodyStyle = lineMetrics.bodyStyle(palette.text)
 
     BoxWithConstraints(modifier.fillMaxSize()) {
         // 占位高度取「一屏」：占位章在列表里占掉的体量与真实章接近，
@@ -534,7 +552,7 @@ fun ContinuousReader(
                         modifier = Modifier.padding(bottom = 12.dp),
                     )
 
-                    is ContinuousItem.Body -> Text(text = item.text, style = bodyStyle)
+                    is ContinuousItem.Body -> ChapterBlockContent(block = item.block, bodyStyle = bodyStyle)
 
                     is ContinuousItem.Pending -> Column(
                         modifier = Modifier.fillMaxWidth().height(placeholderHeight),
@@ -583,11 +601,36 @@ internal data class ContinuousVisiblePosition(
     val offset: Int,
 )
 
-/** [position] 与其所属章段数的一份原子采样。 */
-private data class ContinuousPositionSample(
+/** [position]、所属章段数与列表结构代际的一份原子采样。 */
+internal data class ContinuousPositionSample(
     val position: ContinuousVisiblePosition,
     val total: Int,
+    val generation: Int,
 )
+
+/** 通过全部一致性校验的连续阅读位置。 */
+internal data class ContinuousReadingPosition(
+    val chapter: Int,
+    val fraction: Float,
+)
+
+/**
+ * 旧代际、旧扁平下标、Pending→Header 的 total=0 样本均不能同步章号或落库。
+ * 只有采样仍与当前 layout/loaded 快照完全一致时才换算逻辑块位置。
+ */
+internal fun continuousPositionForSync(
+    sample: ContinuousPositionSample,
+    currentGeneration: Int,
+    currentPosition: ContinuousVisiblePosition,
+    currentTotal: Int,
+): ContinuousReadingPosition? {
+    if (sample.generation != currentGeneration || sample.position != currentPosition) return null
+    if (sample.total <= 0 || sample.total != currentTotal) return null
+    val key = sample.position.key ?: return null
+    val (chapter, paragraph) = parseContinuousKey(key) ?: return null
+    if (paragraph !in 0 until sample.total) return null
+    return ContinuousReadingPosition(chapter, blockFraction(paragraph, sample.total))
+}
 
 /**
  * 连续阅读的跨协程协调状态。**故意不是 Compose 状态**，组合里必须能同步读写。
@@ -597,9 +640,16 @@ private data class ContinuousPositionSample(
  * 迟到成功也不能覆盖用户。FAILED 只抑制进度、不移动视口；DRAG_PENDING 必须观察到
  * 拖动后的新 layout 位置才能离开。
  */
-internal class ContinuousTracker(initialChapter: Int) {
+internal class ContinuousTracker(
+    initialChapter: Int,
+    initialHideReadChapters: Boolean = false,
+) {
     /** 最近一次已知的当前章：进度回传与外部跳章判定共同维护。 */
     var expected: Int = initialChapter
+
+    /** 当前 rows 结构；Scroll↔Scroll2 变化必须开启新恢复代际。 */
+    var hideReadChapters: Boolean = initialHideReadChapters
+        private set
 
     /** 待处理的外部跳章目标；null 表示没有待处理跳章。 */
     var pendingAnchor: Int? = null
@@ -628,6 +678,12 @@ internal class ContinuousTracker(initialChapter: Int) {
         phase = ContinuousRestorePhase.RESTORING
         dragStart = null
         dragRequiresKeyChange = false
+    }
+
+    /** 已读章显隐改变时，原列表的所有扁平下标与排队样本同时作废。 */
+    fun requestStructureRestore(chapter: Int, hideReadChapters: Boolean) {
+        this.hideReadChapters = hideReadChapters
+        requestRestore(chapter)
     }
 
     /** 开始首次恢复并返回本轮代际。 */
@@ -714,12 +770,12 @@ internal sealed interface ContinuousItem {
         override val key: String get() = headerKey(chapter)
     }
 
-    /** 正文段落。[paragraphIndex] 是该段在本章内的下标（进度换算的唯一依据）。 */
+    /** 正文原子块；块自带本章内下标，不再依赖 String 载荷。 */
     data class Body(
         override val chapter: Int,
-        val paragraphIndex: Int,
-        val text: String,
+        val block: ChapterBlock,
     ) : ContinuousItem {
+        val paragraphIndex: Int get() = block.paraIndex
         override val key: String get() = paragraphKey(chapter, paragraphIndex)
     }
 
@@ -782,33 +838,13 @@ internal fun continuousFractionForModeSwitch(
     if (key == null || totalParagraphs <= 0) return null
     val (chapter, paragraph) = parseContinuousKey(key) ?: return null
     if (chapter != currentChapter || paragraph !in 0 until totalParagraphs) return null
-    return paragraph.toFloat() / totalParagraphs
+    return blockFraction(paragraph, totalParagraphs)
 }
 
-/**
- * 章内比例（0..1）→ 段落下标，**四舍五入**。
- *
- * 与上报口径必须严格互逆：上报是「段落下标 / 段数」，恢复是「比例 × 段数」。
- * 用四舍五入而不是截断：比例要经 `× 10000` 取整再回来（`durChapterPos`），
- * 截断会把 3/7 这类值算回 2，退出重进就退一段。
- *
- * 公式与 `HorizontalReader.kt` 的 `paragraphAtFraction` 相同（含上界取段数，
- * 好让 `1f` 能落到末段）。那边是文件私有实现，本轮不改那个文件，故此处独写一份；
- * 两边口径必须一起改。
- */
-private fun paragraphAtFraction(fraction: Float, totalParagraphs: Int): Int =
-    if (totalParagraphs <= 0) {
-        0
-    } else {
-        (fraction.coerceIn(0f, 1f) * totalParagraphs)
-            .roundToInt()
-            .coerceIn(0, totalParagraphs)
-    }
-
-/** 定位用的 item key：非章首取段落项，章首取章头。 */
-private fun restoreAnchorKey(chapter: Int, fraction: Float, totalParagraphs: Int): String {
+/** 定位用的 item key：非章首取正文块，章首取章头；1f 经共享换算后落到末块。 */
+internal fun restoreAnchorKey(chapter: Int, fraction: Float, totalParagraphs: Int): String {
     if (totalParagraphs <= 0 || fraction <= 0.001f) return headerKey(chapter)
-    val paragraph = paragraphAtFraction(fraction, totalParagraphs)
+    val paragraph = blockAtFraction(fraction, totalParagraphs)
         .coerceIn(0, totalParagraphs - 1)
     return paragraphKey(chapter, paragraph)
 }

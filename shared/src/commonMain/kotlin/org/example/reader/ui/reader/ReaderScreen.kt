@@ -88,9 +88,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.addPathNodes
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextIndent
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -117,6 +115,15 @@ import kotlin.math.roundToInt
 
 /** 阅读器内可挂载的面板。目录是独立页面，不在此列。 */
 private enum class ReaderPanel { Settings }
+
+/** 单章列表的一次恢复身份；正文应用代际、章号或渲染类别变化都会使旧完成标记失效。 */
+private data class SingleChapterRestoreKey(
+    val chapterIndex: Int,
+    val contentIndex: Int,
+    val body: ChapterBlockSnapshot?,
+    val horizontalMode: Boolean,
+    val continuousMode: Boolean,
+)
 
 /**
  * 阅读器。
@@ -200,47 +207,67 @@ fun ReaderScreen(
     // 进入/切换翻页方式时只从 VM 的位置真源恢复；pendingScrollFraction 是待消费的一次性
     // UI 指令，可能残留旧值，不能覆盖 currentFraction()。
     val restoreFraction = viewModel.currentFraction()
+    val singleChapterRestoreKey = SingleChapterRestoreKey(
+        chapterIndex = state.currentIndex,
+        contentIndex = state.contentIndex,
+        body = state.body,
+        horizontalMode = horizontalMode,
+        continuousMode = continuousMode,
+    )
+    var completedSingleChapterRestore by remember {
+        mutableStateOf<SingleChapterRestoreKey?>(null)
+    }
 
-    // 单章竖排按 currentFraction 恢复；pendingScrollFraction 仍由原路径在滚完后消费。
+    // 单章竖排按 currentFraction 恢复；恢复完成前禁止列表快照覆盖 VM 真源。
+    // revision 让相同正文的同章刷新也重新定位，不能以结构相等的 blocks 代替应用代际。
     // 横翻自己定位（PagerState），连续模式也自己定位（窗口要等正文到位）——两边都跳过这里。
     LaunchedEffect(
         state.currentIndex,
         state.contentIndex,
-        state.paragraphs,
+        state.blocks,
+        state.body?.revision,
         horizontalMode,
         continuousMode,
     ) {
-        if (horizontalMode || continuousMode || state.paragraphs.isEmpty()) return@LaunchedEffect
-        // 换章时 currentIndex 先变、正文后到：此时 paragraphs 还是**上一章**的，
+        if (horizontalMode || continuousMode || state.blocks.isEmpty()) return@LaunchedEffect
+        // 换章时 currentIndex 先变、正文后到：此时快照还是**上一章**的，
         // 按它滚到「末尾」（prev 的方向）会闪一帧旧正文。等正文所属章对齐再定位。
         if (state.contentIndex != state.currentIndex) return@LaunchedEffect
         val restore = restoreFraction
         // 口径统一为**段落比例**（R-06）：上报是「首个可见段落下标 / 段数」，
         // 恢复必须用它的逆运算，否则退出重进会稳定偏移若干段。
         // 列表第 0 项是章头，段落 item 的下标 = 段落下标 + 1。
-        val total = state.paragraphs.size
+        val total = state.blocks.size
         if (restore > 0.001f && total > 0) {
-            val paragraph = (restore * total).roundToInt().coerceIn(0, total)
-            listState.scrollToItem((paragraph + 1).coerceIn(0, total))
+            val block = blockAtFraction(restore, total)
+            listState.scrollToItem((block + 1).coerceIn(0, total))
             viewModel.consumePendingScroll()
         } else {
             listState.scrollToItem(0)
         }
+        // 先完成程序化定位，再开放采集；effect 重启前的旧 key 样本始终无效。
+        completedSingleChapterRestore = singleChapterRestoreKey
     }
 
     // 章内位置回传：VM 内部按 10s 节流落库，不必在这里控频。
     // 连续模式自己按窗口回传（见 ContinuousReader），这里跳过，否则会按单章的项数报错章。
     LaunchedEffect(
         listState,
-        state.currentIndex,
-        horizontalMode,
-        continuousMode,
-        state.paragraphs.size,
+        singleChapterRestoreKey,
     ) {
         if (horizontalMode || continuousMode) return@LaunchedEffect
-        val paragraphCount = state.paragraphs.size
-        snapshotFlow { listState.chapterParagraphFraction(paragraphCount) }
-            .collect { viewModel.onScrolled(it) }
+        val paragraphCount = state.blocks.size
+        snapshotFlow {
+            val completed = completedSingleChapterRestore == singleChapterRestoreKey
+            val fraction = if (completed) {
+                listState.chapterParagraphFraction(paragraphCount)
+            } else {
+                null
+            }
+            completed to fraction
+        }.collect { (completed, fraction) ->
+            if (completed && fraction != null) viewModel.onScrolled(fraction)
+        }
     }
 
     // 连续模式只改 `currentIndex`、不动 `contentIndex`（正文是整块窗口）。切回单章竖排 /
@@ -581,28 +608,38 @@ fun ReaderScreen(
                             onFontSizeChange = deps.readerSettings::setFontSize,
                             onThemeChange = deps.readerSettings::setTheme,
                             onMethodChange = { method ->
-                                // 连续列表的最后一帧可能尚未经 snapshotFlow 回传；切横翻前直接
-                                // 从正文视口首个位置同步一次。visibleItemsInfo 原始首项可能只在
-                                // 顶部露出一截，共用选择器会跳过它；无合法候选则保留 VM 现值。
-                                val enteringHorizontal =
-                                    method == ReadMethod.Horizontal || method == ReadMethod.DualPage
-                                val handoff = if (continuousMode && enteringHorizontal &&
-                                    state.contentIndex == state.currentIndex
-                                ) {
-                                    val layout = listState.layoutInfo
-                                    val first = firstContinuousViewportItem(
-                                        items = layout.visibleItemsInfo,
-                                        viewportStart = layout.viewportStartOffset,
-                                    ) { it.offset }
+                                if (method == settings.method) return@ReaderSettingsPanel
+                                // 所有列表源都在切换前同步读取真实视口，覆盖 SlideUp 与
+                                // Scroll↔Scroll2；横翻/双页则沿用真实翻页已写入的 VM 真源。
+                                val contentMatches = state.contentIndex == state.currentIndex
+                                val layout = listState.layoutInfo
+                                val first = firstContinuousViewportItem(
+                                    items = layout.visibleItemsInfo,
+                                    viewportStart = layout.viewportStartOffset,
+                                ) { it.offset }
+                                val singleHandoff = if (settings.method == ReadMethod.SlideUp && contentMatches) {
+                                    singleChapterParagraphFraction(first?.index, state.blocks.size)
+                                } else {
+                                    null
+                                }
+                                val continuousHandoff = if (continuousMode && contentMatches) {
                                     continuousFractionForModeSwitch(
                                         key = first?.key as? String,
                                         currentChapter = state.currentIndex,
-                                        totalParagraphs = state.paragraphs.size,
+                                        totalParagraphs = state.blocks.size,
                                     )
                                 } else {
                                     null
                                 }
-                                handoff?.let(viewModel::onModeSwitchPosition)
+                                viewModel.onModeSwitchPosition(
+                                    modeSwitchFraction(
+                                        sourceMethod = settings.method,
+                                        currentFraction = viewModel.currentFraction(),
+                                        singleChapterFraction = singleHandoff,
+                                        continuousFraction = continuousHandoff,
+                                        chapterEndRestore = viewModel.isChapterEndRestore(),
+                                    ),
+                                )
                                 deps.readerSettings.setMethod(method)
                             },
                             onBrightnessPreview = deps.readerSettings::previewBrightness,
@@ -641,7 +678,7 @@ private fun ReaderContent(
         }
         return
     }
-    if (state.error != null && state.paragraphs.isEmpty()) {
+    if (state.error != null && state.blocks.isEmpty()) {
         Box(modifier = modifier, contentAlignment = Alignment.Center) {
             Text(
                 text = state.error!!,
@@ -657,15 +694,9 @@ private fun ReaderContent(
     // 正文永远避开系统栏；控件只是覆盖层，不参与布局
     val topInset = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
     val bottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-    // 段距与字号同样以 sp 计，换算成布局用的 dp
-    val paragraphGap = with(LocalDensity.current) { settings.paragraphGapSp.sp.toDp() }
-    val bodyStyle = TextStyle(
-        fontSize = settings.fontSize.sp,
-        lineHeight = settings.textLineHeightSp.sp,
-        color = palette.text,
-        // 中文段落首行缩进两个字宽，与前端「首行缩进」一致
-        textIndent = TextIndent(firstLine = (settings.fontSize * 2).sp),
-    )
+    val lineMetrics = ReaderLineMetrics.from(settings)
+    val paragraphGap = lineMetrics.paragraphGapDp(LocalDensity.current)
+    val bodyStyle = lineMetrics.bodyStyle(palette.text)
 
     LazyColumn(
         state = listState,
@@ -688,8 +719,8 @@ private fun ReaderContent(
                 modifier = Modifier.padding(bottom = 12.dp),
             )
         }
-        itemsIndexed(state.paragraphs) { _, paragraph ->
-            Text(text = paragraph, style = bodyStyle)
+        itemsIndexed(state.blocks) { _, block ->
+            ChapterBlockContent(block = block, bodyStyle = bodyStyle)
         }
         if (state.isLoadingContent) {
             item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
@@ -1078,14 +1109,15 @@ private suspend fun autoScrollStep(block: suspend () -> Unit): Boolean =
  * 于是同一段落在竖排与横翻（按段落下标）算出来的比例不同，换模式或重进就稳定差一页。
  *
  * 这里分子一律是「首个可见段落下标」（首项是章头时取 0），分母是该章段数，
- * 与 `HorizontalReader` 的 `pageStartFraction`、连续阅读的上报口径完全一致。
+ * 与 `HorizontalReader` 的 `blockFraction`、连续阅读的上报口径完全一致。
  */
 private fun androidx.compose.foundation.lazy.LazyListState.chapterParagraphFraction(
     paragraphCount: Int,
-): Float {
-    if (paragraphCount <= 0) return 0f
-    val first = layoutInfo.visibleItemsInfo.firstOrNull() ?: return 0f
-    // item 0 是章头，段落 item 从 1 开始
-    val paragraph = (first.index - 1).coerceAtLeast(0)
-    return (paragraph.toFloat() / paragraphCount).coerceIn(0f, 1f)
+): Float? {
+    val layout = layoutInfo
+    val first = firstContinuousViewportItem(
+        items = layout.visibleItemsInfo,
+        viewportStart = layout.viewportStartOffset,
+    ) { it.offset }
+    return singleChapterParagraphFraction(first?.index, paragraphCount)
 }

@@ -32,19 +32,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.rememberTextMeasurer
-import androidx.compose.ui.text.style.TextIndent
-import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 import org.example.reader.core.settings.ClickAction
 import org.example.reader.core.settings.ReaderSettings
-import kotlin.math.roundToInt
 
 /**
  * 左右翻页。
@@ -59,7 +54,7 @@ import kotlin.math.roundToInt
  *   点中间呼出/收起控件
  *
  * 进度口径（**唯一**）：页首段落 / 全章段数。上报与恢复共用
- * [pageStartFraction] 与 [paragraphAtFraction] 这一对互逆函数——
+ * [blockFraction] 与 [blockAtFraction] 这一对互逆函数——
  * 只要两端点不同源，「退出重进」就会稳定偏移若干页（A4 就是这么来的）。
  *
  * 正文只避开系统栏：工具条是可收起的覆盖层，不为它预留高度，
@@ -79,10 +74,14 @@ fun HorizontalReader(
     restoreFraction: Float,
     modifier: Modifier = Modifier,
 ) {
-    // 正文必须与当前章对齐：换章瞬间 paragraphs 还是上一章的
-    val contentReady = state.paragraphs.isNotEmpty() && state.contentIndex == state.currentIndex
+    // 正文必须与当前章对齐：换章瞬间快照还是上一章的
+    val contentReady = state.blocks.isNotEmpty() && state.contentIndex == state.currentIndex
+    // 同一章停留期间跨全部分页代际保留逻辑块锚。真实翻页会推进它；恢复本身不会。
+    val restoreSession = remember(state.currentIndex, state.contentIndex) {
+        HorizontalRestoreSession(restoreFraction)
+    }
 
-    if (state.isLoading && state.paragraphs.isEmpty()) {
+    if (state.isLoading && state.blocks.isEmpty()) {
         Box(modifier, contentAlignment = Alignment.Center) {
             CircularProgressIndicator(color = palette.text)
         }
@@ -99,37 +98,48 @@ fun HorizontalReader(
         lineHeight = ((settings.fontSize + 4) * 1.4f).sp,
         color = palette.text,
     )
-    val bodyStyle = TextStyle(
-        fontSize = settings.fontSize.sp,
-        lineHeight = settings.textLineHeightSp.sp,
-        color = palette.text,
-        // 首行缩进两个汉字宽，与上下滑动模式保持一致
-        textIndent = TextIndent(firstLine = (settings.fontSize * 2).sp),
-    )
+    val lineMetrics = ReaderLineMetrics.from(settings)
+    val bodyStyle = lineMetrics.bodyStyle(palette.text)
 
     BoxWithConstraints(modifier.fillMaxSize().padding(top = topInset, bottom = bottomInset)) {
         val horizontal = 20.dp
         val vertical = 16.dp
         val widthPx = with(density) { (maxWidth - horizontal * 2).roundToPx() }
         val heightPx = with(density) { (maxHeight - vertical * 2).roundToPx() }
-        val gapPx = with(density) { settings.paragraphGapSp.sp.toPx() }.toInt()
-        val gapDp = with(density) { settings.paragraphGapSp.sp.toDp() }
+        val gapPx = lineMetrics.paragraphGapPx(density)
+        val gapDp = lineMetrics.paragraphGapDp(density)
+        val snapshot = state.body
+        val layoutGeneration = snapshot?.let {
+            HorizontalLayoutGeneration(
+                snapshot = it,
+                widthPx = widthPx,
+                heightPx = heightPx,
+                lineMetrics = lineMetrics,
+                title = state.currentChapter?.title.orEmpty(),
+                titleStyle = titleStyle,
+            )
+        }
 
-        // 尺寸还没量出来时不分页，否则会先出一份错误分页再重排
-        val pages = if (widthPx <= 0 || heightPx <= 0) {
+        // 内容、尺寸、正文 metrics 或标题测量输入变化都形成新代际，不能只 clamp 旧页码。
+        val pages = if (layoutGeneration == null || widthPx <= 0 || heightPx <= 0) {
             emptyList()
         } else {
-            remember(state.paragraphs, state.currentChapter?.title, widthPx, heightPx, gapPx, titleStyle, bodyStyle) {
-                paginate(
-                    measurer = measurer,
-                    title = state.currentChapter?.title.orEmpty(),
-                    titleStyle = titleStyle,
-                    paragraphs = state.paragraphs,
-                    bodyStyle = bodyStyle,
+            remember(layoutGeneration) {
+                paginateBlocks(
+                    blocks = layoutGeneration.snapshot.blocks,
+                    titleHeightPx = measureChapterTitle(
+                        measurer = measurer,
+                        title = layoutGeneration.title,
+                        titleStyle = layoutGeneration.titleStyle,
+                        widthPx = widthPx,
+                        gapPx = gapPx,
+                    ),
                     widthPx = widthPx,
                     heightPx = heightPx,
                     gapPx = gapPx,
-                )
+                ) { block ->
+                    measureChapterBlock(measurer, block, bodyStyle, widthPx)
+                }
             }
         }
 
@@ -164,12 +174,13 @@ fun HorizontalReader(
                 )
             }
 
-            // 以「正文所属章」为 key：换章时重建 PagerState，避免上一章残留的半页偏移
-            else -> key(state.contentIndex) {
+            // 每一布局代际重建 PagerState 与恢复闸门，旧代际页码/半页偏移不得复用。
+            else -> key(layoutGeneration) {
                 val pagerState = rememberPagerState(pageCount = { pages.size })
                 PagedContent(
                     pagerState = pagerState,
                     pages = pages,
+                    layoutGeneration = requireNotNull(layoutGeneration),
                     state = state,
                     clickAction = settings.clickAction,
                     palette = palette,
@@ -178,7 +189,7 @@ fun HorizontalReader(
                     gapDp = gapDp,
                     horizontal = horizontal,
                     vertical = vertical,
-                    restoreFraction = restoreFraction,
+                    restoreSession = restoreSession,
                     onPrevChapter = onPrevChapter,
                     onNextChapter = onNextChapter,
                     onToggleControls = onToggleControls,
@@ -190,10 +201,21 @@ fun HorizontalReader(
     }
 }
 
+/** 横翻布局代际：任一测量输入变化都必须重新定位，而不是沿用旧 currentPage。 */
+private data class HorizontalLayoutGeneration(
+    val snapshot: ChapterBlockSnapshot,
+    val widthPx: Int,
+    val heightPx: Int,
+    val lineMetrics: ReaderLineMetrics,
+    val title: String,
+    val titleStyle: TextStyle,
+)
+
 @Composable
 private fun PagedContent(
     pagerState: PagerState,
     pages: List<ReaderPage>,
+    layoutGeneration: HorizontalLayoutGeneration,
     state: ReaderUiState,
     clickAction: String,
     palette: ReaderPalette,
@@ -202,7 +224,7 @@ private fun PagedContent(
     gapDp: Dp,
     horizontal: Dp,
     vertical: Dp,
-    restoreFraction: Float,
+    restoreSession: HorizontalRestoreSession,
     onPrevChapter: () -> Unit,
     onNextChapter: () -> Unit,
     onToggleControls: () -> Unit,
@@ -212,37 +234,42 @@ private fun PagedContent(
     val scope = rememberCoroutineScope()
     // 与竖排一致：档位改动要立刻生效，不靠重进阅读器。
     val currentClickAction by rememberUpdatedState(clickAction)
+    // null 表示恢复尚未完成。普通恢复后的目标页只作为基线，不向 VM 上报；
+    // 章末 1f 是唯一例外：按既有语义归一到真实末页页首，且归一后锚已小于 1f，
+    // 后续排版代际不会重复回写，更不会形成普通 mid-page 的累计向前漂移。
+    var settledPage by remember { mutableStateOf<Int?>(null) }
 
-    // null 表示恢复尚未完成。它同时是 snapshotFlow 的观察项，恢复完成后会立即
-    // 以目标页触发一次上报，而不是等待用户再翻一页。
-    var completedRestoreTarget by remember { mutableStateOf<Int?>(null) }
-
-    // 进入本页时定位一次：比例 → 段落 → 它所在的页
-    LaunchedEffect(Unit) {
-        val target = if (restoreFraction > 0.001f) {
-            val targetParagraph = paragraphAtFraction(restoreFraction, state.paragraphs.size)
-            pages.indexOfLast { it.startParagraph <= targetParagraph }.coerceIn(0, pages.lastIndex)
-        } else {
-            0
+    // 每个布局代际都从同一个跨代际逻辑锚定位：比例 → 逻辑块 → 它所在的新页。
+    LaunchedEffect(layoutGeneration) {
+        val restoreFraction = restoreSession.anchorFraction
+        val restore = restoreSession.restoreTarget(pages, layoutGeneration.snapshot.blocks.size)
+        pagerState.scrollToPage(restore.pageIndex)
+        settledPage = restore.pageIndex
+        // 先建立采集基线，再提交章末的一次性归一；普通恢复 normalizedFraction=null。
+        restore.normalizedFraction?.let { normalized ->
+            restoreSession.completeRestore(restore)
+            onProgress(normalized)
         }
-        pagerState.scrollToPage(target)
-        completedRestoreTarget = target
         if (restoreFraction > 0.001f) onRestoreConsumed()
     }
 
     // 翻页即进度：按本页**页首**段落对应的比例，与恢复时是同一个端点。
     //
-    // 这里必须与 [pageStartFraction] / [paragraphAtFraction] 的映射严格互逆：
-    // 旧实现上报页尾（`startParagraph + blocks.size`）、恢复却按页首落页，
+    // 这里必须与 [blockFraction] / [blockAtFraction] 的映射严格互逆：
+    // 旧实现上报页尾（`startParaIndex + blocks.size`）、恢复却按页首落页，
     // 于是「退出 → 重进」每次都前进一页（A4，末页除外的假象来自末页没有下一页可进）。
     // scrollToPage 完成前，PagerState 默认的 currentPage == 0 不是真实阅读位置，
-    // 必须整体屏蔽；完成后只由目标页和后续真实 currentPage 变化驱动上报。
+    // 必须整体屏蔽；落在恢复目标页也不上报。只有翻离已稳定页才代表真实阅读位移。
     LaunchedEffect(pagerState, pages) {
-        snapshotFlow { pagerState.currentPage to completedRestoreTarget }.collect { (index, restoredTarget) ->
-            if (restoredTarget == null) return@collect
+        snapshotFlow { pagerState.currentPage to settledPage }.collect { (index, baseline) ->
+            val previous = baseline ?: return@collect
+            if (index == previous) return@collect
             val page = pages.getOrNull(index) ?: return@collect
-            val total = state.paragraphs.size
-            if (total > 0) onProgress(pageStartFraction(page.startParagraph, total))
+            val total = state.blocks.size
+            if (total > 0) {
+                settledPage = index
+                onProgress(restoreSession.onUserPage(page.startParaIndex, total))
+            }
         }
     }
 
@@ -288,8 +315,8 @@ private fun PagedContent(
                     modifier = Modifier.padding(bottom = 12.dp),
                 )
             }
-            page.blocks.forEach { paragraph ->
-                Text(text = paragraph, style = bodyStyle)
+            page.blocks.forEach { block ->
+                ChapterBlockContent(block = block, bodyStyle = bodyStyle)
             }
         }
     }
@@ -306,104 +333,4 @@ private fun PagedContent(
             )
         }
     }
-}
-
-/** 每页装哪些段落。`showTitle` 只让本章第一页带标题。 */
-private data class ReaderPage(
-    val blocks: List<String>,
-    val showTitle: Boolean,
-    /**
-     * 本页**第一段**在整章里的下标：进度与恢复的唯一基准。
-     *
-     * 页尾（`startParagraph + blocks.size`）**不是**可用的位置端点——它同时是下一页的页首，
-     * 按页尾存、按页首读会让每次「退出重进」前进一页（A4）。
-     */
-    val startParagraph: Int,
-)
-
-/**
- * 段落下标 → 章内比例（0..1），**页首口径**。
- *
- * 与 [paragraphAtFraction] 严格互逆：`paragraphAtFraction(pageStartFraction(p, total), total) == p`。
- * 上报进度（页首）与恢复位置（比例 → 段落）必须共用这一对函数，否则端点定义会再次分叉。
- */
-private fun pageStartFraction(startParagraph: Int, totalParagraphs: Int): Float =
-    if (totalParagraphs <= 0) 0f else (startParagraph.toFloat() / totalParagraphs).coerceIn(0f, 1f)
-
-/**
- * 章内比例（0..1）→ 段落下标，[pageStartFraction] 的逆运算。
- *
- * 用**四舍五入**而不是截断：比例在服务端要经 `× 10000` 取整再回来
- * （`durChapterPos`），截断会把 3/7 这类值算回 2，导致恢复时反而退一页。
- * 上界取 `totalParagraphs`（而不是 `total - 1`）：`1f`（「上一章」落章末）要能取到末页。
- */
-private fun paragraphAtFraction(fraction: Float, totalParagraphs: Int): Int =
-    if (totalParagraphs <= 0) {
-        0
-    } else {
-        (fraction.coerceIn(0f, 1f) * totalParagraphs)
-            .roundToInt()
-            .coerceIn(0, totalParagraphs)
-    }
-
-/**
- * 按段落装箱分页。
- *
- * 逐段用 [TextMeasurer] 量高，累计超过可用高度就换页；
- * 单段本身就超过一页时独占一页（不切段，保证首行缩进与断行不被破坏）。
- */
-private fun paginate(
-    measurer: TextMeasurer,
-    title: String,
-    titleStyle: TextStyle,
-    paragraphs: List<String>,
-    bodyStyle: TextStyle,
-    widthPx: Int,
-    heightPx: Int,
-    gapPx: Int,
-): List<ReaderPage> {
-    if (widthPx <= 0 || heightPx <= 0) return emptyList()
-
-    val titleHeight = if (title.isBlank()) {
-        0
-    } else {
-        measurer.measure(
-            text = AnnotatedString(title),
-            style = titleStyle,
-            constraints = Constraints(maxWidth = widthPx),
-        ).size.height + gapPx * 3
-    }
-
-    val pages = mutableListOf<ReaderPage>()
-    var current = mutableListOf<String>()
-    var used = titleHeight
-    var first = true
-    // 已装进前面各页的段数，用于记录每页的起始段落下标
-    var consumed = 0
-
-    fun flush() {
-        if (current.isNotEmpty() || first) {
-            pages += ReaderPage(blocks = current.toList(), showTitle = first, startParagraph = consumed)
-            consumed += current.size
-        }
-        current = mutableListOf()
-        used = 0
-        first = false
-    }
-
-    paragraphs.forEach { paragraph ->
-        val height = measurer.measure(
-            text = AnnotatedString(paragraph),
-            style = bodyStyle,
-            constraints = Constraints(maxWidth = widthPx),
-        ).size.height
-        val need = if (current.isEmpty()) height else height + gapPx
-        if (current.isNotEmpty() && used + need > heightPx) {
-            flush()
-        }
-        current += paragraph
-        used += if (current.size == 1) height else height + gapPx
-    }
-    if (current.isNotEmpty()) flush()
-    return pages.ifEmpty { listOf(ReaderPage(blocks = emptyList(), showTitle = true, startParagraph = 0)) }
 }

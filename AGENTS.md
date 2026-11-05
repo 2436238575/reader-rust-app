@@ -142,11 +142,24 @@ androidApp/        Activity、清单、图标、资源
   缓存 key 是目录下标；`刷新本章` 必须 `force = true` 绕过缓存。
 - 阅读器设置只有一个来源 `deps.readerSettings`（`core/settings/ReaderSettings.kt`），
   面板改一项正文立即重排；新增配置项要同时补 `SettingsKeys` 与 load/update。
-- **左右翻页（`HorizontalReader.kt`）**：分页按段落整体装箱（`TextMeasurer` 逐段量高），
-  不在段落中间切；每页记 `startParagraph`，进度与恢复都按**段落比例**换算，
-  与竖排模式同一口径（不按页码，换字号/换字号后页码会变）。
+- **左右翻页（`HorizontalReader.kt`）**：分页按块整体装箱（`TextMeasurer` 逐块量高），
+  不在段落中间切；每页记 `startParaIndex`（页首正文块下标），进度与恢复都按
+  **块比例**换算，与竖排模式同一口径（不按页码，换字号后页码会变）。
   分页只避开系统栏，**不为工具条预留高度**——工具条可收起，收起来整页可见。
-- 翻页模式的正文区域由 `contentIndex`（正文属于哪一章）把关：
+  内容/尺寸/metrics/标题任一变化都构成新**布局代际**（`HorizontalLayoutGeneration`），
+  必须重建 PagerState 并从 `HorizontalRestoreSession` 的逻辑锚重新定位；
+  只有用户真实翻页才推进锚，恢复本身不得改写锚（否则重排会累计漂移）。
+- **正文块模型与排版口径（P1-6a 定稿）**：正文只经 `ChapterBlockBuilder.build(content)`
+  切成 `ChapterBlock`（`core/model/ChapterBlock.kt`），渲染统一走 `ChapterBlockContent`；
+  字号/行高/段距/首行缩进只由 `ReaderLineMetrics.from(settings)` 产出，四种阅读容器共用。
+  `ReaderUiState.body` 是唯一正文快照（章号 + 完整来源 + 块列表 + `revision`），
+  `blocks` / `contentIndex` / `isEdited` 都是它的派生只读属性——**不要再引入第二份正文**。
+  `revision` 取 VM 的 `generation`：相同正文的刷新也必须换 revision，恢复 effect 要把它
+  当 key，否则刷新后不会重新定位、列表会把旧偏移写回。
+  位置换算只在 `ui/reader/ReaderPosition.kt`：`blockFraction` / `blockAtFraction` 是
+  互逆对，`modeSwitchFraction` 负责五模式交接；连续阅读的采样必须带 `generation`，
+  旧代际样本不得改章或落库。
+- 翻页模式的正文区域由 `contentIndex`（正文属于哪一章，现为 `body.chapterIndex` 的派生值）把关：
   换章时 `currentIndex` 先变、正文后到，必须等两者一致再排版，
   否则会拿上一章正文分页并提前消费掉恢复位置。
 - 阅读器是沉浸式：正文全屏、点正文切换控件；**正文必须避开系统栏**

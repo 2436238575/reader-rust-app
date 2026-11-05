@@ -7,6 +7,30 @@ import org.example.reader.core.text.ChineseMode
 import org.example.reader.ui.reader.ReaderPalettes
 
 /**
+ * 正文字体。key 与前端 `fontPresets` 对齐，落盘用稳定标识。
+ *
+ * Android 只有通用字族（sans / serif / mono），没有内置楷体/仿宋：
+ * 前端同步过来的 `kaiti` / `fangsong` 一律回落到宋体（serif），
+ * 不提供「点了但看不出差别」的假选项。
+ */
+enum class ReaderFont(val key: String, val label: String) {
+    System("system", "系统"),
+    Heiti("heiti", "黑体"),
+    Songti("songti", "宋体"),
+    Mono("mono", "等宽"),
+    ;
+
+    companion object {
+        fun fromKey(key: String?): ReaderFont = when (key) {
+            Heiti.key -> Heiti
+            Songti.key, "kaiti", "fangsong" -> Songti
+            Mono.key -> Mono
+            else -> System
+        }
+    }
+}
+
+/**
  * 翻页方式。取值与前端 `readerConfig.readMethod` 逐项对齐，
  * `key` 是落盘用的稳定标识（改文案不会丢配置）。
  */
@@ -104,6 +128,23 @@ data class ReaderSettings(
      * 转换只发生在显示层，缓存与快照里仍保留原文。
      */
     val chineseMode: ChineseMode = ChineseMode.Simplified,
+    /** 正文字体，取值见 [ReaderFont]；只影响正文，标题保持默认字族。 */
+    val fontFamily: ReaderFont = ReaderFont.System,
+    /** 字重 100..900（100 一档），默认 400。 */
+    val fontWeight: Int = DEFAULT_FONT_WEIGHT,
+    /**
+     * 正文列最大宽度（dp）。
+     *
+     * 与前端 `pageWidth` 同义（CSS px ≈ dp），默认 800；窗口比它窄时按 20dp 最小留白
+     * 满宽排版。手机上把值调到 400 以下才会看出左右留白，平板/横屏则直接是分栏宽度。
+     */
+    val pageWidth: Int = DEFAULT_PAGE_WIDTH,
+    /**
+     * 章节预加载（P1-5）：进章后预取后 2 章 + 前 1 章。
+     *
+     * 关掉后只按需取当前章：省流量/省服务端压力，代价是每次翻章都要等一次网络。
+     */
+    val preloadEnabled: Boolean = true,
 ) {
     companion object {
         const val DEFAULT_FONT_SIZE = 18
@@ -115,6 +156,15 @@ data class ReaderSettings(
         const val DEFAULT_PARAGRAPH_SPACING = 0.2f
         const val MIN_PARAGRAPH_SPACING = 0f
         const val MAX_PARAGRAPH_SPACING = 1.2f
+        /** 字重区间与前端 `step('fontWeight', 100, 100, 900)` 一致。 */
+        const val DEFAULT_FONT_WEIGHT = 400
+        const val MIN_FONT_WEIGHT = 100
+        const val MAX_FONT_WEIGHT = 900
+        /** 页宽（dp）：前端 400..1200，本端下限放宽到 300 以便手机上看得出留白。 */
+        const val DEFAULT_PAGE_WIDTH = 800
+        const val MIN_PAGE_WIDTH = 300
+        const val MAX_PAGE_WIDTH = 1200
+        const val PAGE_WIDTH_STEP = 50
         /**
          * 亮度下限。
          *
@@ -207,6 +257,32 @@ class ReaderSettingsStore(private val store: KeyValueStore) {
     /** 简繁转换：改动后由阅读器重建当前章正文，不需要重进。 */
     fun setChineseMode(mode: ChineseMode) = update { it.copy(chineseMode = mode) }
 
+    /** 正文字体族：改完立即重排（字体度量变化会改变断行）。 */
+    fun setFontFamily(font: ReaderFont) = update { it.copy(fontFamily = font) }
+
+    /** 字重 100..900；步进与前端一致（100 一档），越界值夹取。 */
+    fun setFontWeight(value: Int) = update {
+        it.copy(
+            fontWeight = value.coerceIn(
+                ReaderSettings.MIN_FONT_WEIGHT,
+                ReaderSettings.MAX_FONT_WEIGHT,
+            ),
+        )
+    }
+
+    /** 章节预加载开关：只影响后续取章，不需要重建当前章。 */
+    fun setPreloadEnabled(enabled: Boolean) = update { it.copy(preloadEnabled = enabled) }
+
+    /** 正文列宽（dp）：小于窗口宽度时居中留白，改完立即重排。 */
+    fun setPageWidth(value: Int) = update {
+        it.copy(
+            pageWidth = value.coerceIn(
+                ReaderSettings.MIN_PAGE_WIDTH,
+                ReaderSettings.MAX_PAGE_WIDTH,
+            ),
+        )
+    }
+
     /**
      * 切换自动阅读的滚动方式（像素 / 段落）。
      *
@@ -275,6 +351,10 @@ class ReaderSettingsStore(private val store: KeyValueStore) {
         store.putString(SettingsKeys.READER_CLICK_ACTION, next.clickAction)
         store.putBoolean(SettingsKeys.READER_SHOW_CHAPTER_IMAGES, next.showChapterImages)
         store.putString(SettingsKeys.READER_CHINESE_MODE, next.chineseMode.key)
+        store.putString(SettingsKeys.READER_FONT_FAMILY, next.fontFamily.key)
+        store.putInt(SettingsKeys.READER_FONT_WEIGHT, next.fontWeight)
+        store.putInt(SettingsKeys.READER_PAGE_WIDTH, next.pageWidth)
+        store.putBoolean(SettingsKeys.READER_PRELOAD, next.preloadEnabled)
     }
 
     /**
@@ -321,6 +401,14 @@ class ReaderSettingsStore(private val store: KeyValueStore) {
                 .coerceIn(ReaderSettings.MIN_PAGE_SPEED, ReaderSettings.MAX_PAGE_SPEED),
             showChapterImages = store.getBoolean(SettingsKeys.READER_SHOW_CHAPTER_IMAGES, true),
             chineseMode = ChineseMode.fromKey(store.getString(SettingsKeys.READER_CHINESE_MODE)),
+            fontFamily = ReaderFont.fromKey(store.getString(SettingsKeys.READER_FONT_FAMILY)),
+            fontWeight = store
+                .getInt(SettingsKeys.READER_FONT_WEIGHT, ReaderSettings.DEFAULT_FONT_WEIGHT)
+                .coerceIn(ReaderSettings.MIN_FONT_WEIGHT, ReaderSettings.MAX_FONT_WEIGHT),
+            pageWidth = store
+                .getInt(SettingsKeys.READER_PAGE_WIDTH, ReaderSettings.DEFAULT_PAGE_WIDTH)
+                .coerceIn(ReaderSettings.MIN_PAGE_WIDTH, ReaderSettings.MAX_PAGE_WIDTH),
+            preloadEnabled = store.getBoolean(SettingsKeys.READER_PRELOAD, true),
         )
     }
 }

@@ -556,11 +556,13 @@ fun ContinuousReader(
         // 占位高度取「一屏」：占位章在列表里占掉的体量与真实章接近，
         // 加载完成时列表不会因为差异过大而整体抖动，滚动位置也不会疯狂跳。
         val placeholderHeight = maxHeight.coerceIn(MIN_PLACEHOLDER_HEIGHT, MAX_PLACEHOLDER_HEIGHT)
+        // 页宽：正文列收窄居中；列表本身仍占满全宽（滚动、点按热区不变）
+        val side = readerSidePadding(maxWidth, settings.pageWidth.dp)
         LazyColumn(
             state = listState,
             contentPadding = PaddingValues(
-                start = 20.dp,
-                end = 20.dp,
+                start = side,
+                end = side,
                 top = topInset + 16.dp,
                 bottom = bottomInset + 24.dp,
             ),

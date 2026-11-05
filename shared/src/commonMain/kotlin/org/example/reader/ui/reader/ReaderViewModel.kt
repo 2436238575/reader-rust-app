@@ -504,6 +504,8 @@ class ReaderViewModel(
      * 失败静默：预取只是加速，不该弹错误打断阅读。
      */
     private fun prefetchNeighbors(index: Int) {
+        // 设置里关掉预加载后只按需取当前章（省流量/省服务端压力）
+        if (!deps.readerSettings.state.value.preloadEnabled) return
         val chapters = _state.value.chapters
         if (chapters.isEmpty()) return
         val wanted = listOf(index + 1, index + 2, index - 1)

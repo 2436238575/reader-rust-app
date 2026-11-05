@@ -16,6 +16,7 @@ import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -759,8 +760,12 @@ fun ReaderScreen(
                             onEyeCareChange = deps.readerSettings::setEyeCare,
                             onLineHeightChange = deps.readerSettings::setLineHeight,
                             onParagraphSpacingChange = deps.readerSettings::setParagraphSpacing,
+                            onFontFamilyChange = deps.readerSettings::setFontFamily,
+                            onFontWeightChange = deps.readerSettings::setFontWeight,
+                            onPageWidthChange = deps.readerSettings::setPageWidth,
                             onShowChapterImagesChange = deps.readerSettings::setShowChapterImages,
                             onChineseModeChange = deps.readerSettings::setChineseMode,
+                            onPreloadChange = deps.readerSettings::setPreloadEnabled,
                             // 自动阅读（P1-8）：面板只配「怎么滚」，开关仍在底栏
                             onClickActionChange = deps.readerSettings::setClickAction,
                             onAutoPageModeChange = deps.readerSettings::setAutoPageMode,
@@ -816,58 +821,62 @@ private fun ReaderContent(
     val paragraphGap = lineMetrics.paragraphGapDp(LocalDensity.current)
     val bodyStyle = lineMetrics.bodyStyle(palette.text)
 
-    LazyColumn(
-        state = listState,
-        contentPadding = PaddingValues(
-            start = 20.dp,
-            end = 20.dp,
-            top = topInset + 16.dp,
-            bottom = bottomInset + 24.dp,
-        ),
-        verticalArrangement = Arrangement.spacedBy(paragraphGap),
-        modifier = modifier.fillMaxSize(),
-    ) {
-        item {
-            Text(
-                text = state.currentChapter?.title.orEmpty(),
-                style = MaterialTheme.typography.titleLarge.copy(
-                    fontSize = (settings.fontSize + 4).sp,
-                    color = palette.text,
-                ),
-                modifier = Modifier.padding(bottom = 12.dp),
-            )
-        }
-        itemsIndexed(state.blocks) { _, block ->
-            ChapterBlockContent(
-                block = block,
-                bodyStyle = bodyStyle,
-                imageLoader = imageLoader,
-                onImageClick = onImageClick,
-            )
-        }
-        if (state.isLoadingContent) {
-            item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
-        }
-        if (state.error != null) {
+    // 页宽：只有正文列收窄居中，点按热区仍由外层 modifier（全屏）承担
+    BoxWithConstraints(modifier.fillMaxSize()) {
+        val side = readerSidePadding(maxWidth, settings.pageWidth.dp)
+        LazyColumn(
+            state = listState,
+            contentPadding = PaddingValues(
+                start = side,
+                end = side,
+                top = topInset + 16.dp,
+                bottom = bottomInset + 24.dp,
+            ),
+            verticalArrangement = Arrangement.spacedBy(paragraphGap),
+            modifier = Modifier.fillMaxSize(),
+        ) {
             item {
                 Text(
-                    text = state.error!!,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
+                    text = state.currentChapter?.title.orEmpty(),
+                    style = MaterialTheme.typography.titleLarge.copy(
+                        fontSize = (settings.fontSize + 4).sp,
+                        color = palette.text,
+                    ),
+                    modifier = Modifier.padding(bottom = 12.dp),
                 )
             }
-        }
-        // 控件隐藏时也能翻章：正文末尾保留一组文字入口
-        item {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly,
-            ) {
-                TextButton(onClick = onPrev, enabled = state.hasPrev) {
-                    Text("上一章", color = palette.secondaryText)
+            itemsIndexed(state.blocks) { _, block ->
+                ChapterBlockContent(
+                    block = block,
+                    bodyStyle = bodyStyle,
+                    imageLoader = imageLoader,
+                    onImageClick = onImageClick,
+                )
+            }
+            if (state.isLoadingContent) {
+                item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
+            }
+            if (state.error != null) {
+                item {
+                    Text(
+                        text = state.error!!,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
                 }
-                TextButton(onClick = onNext, enabled = state.hasNext) {
-                    Text("下一章", color = palette.secondaryText)
+            }
+            // 控件隐藏时也能翻章：正文末尾保留一组文字入口
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                ) {
+                    TextButton(onClick = onPrev, enabled = state.hasPrev) {
+                        Text("上一章", color = palette.secondaryText)
+                    }
+                    TextButton(onClick = onNext, enabled = state.hasNext) {
+                        Text("下一章", color = palette.secondaryText)
+                    }
                 }
             }
         }

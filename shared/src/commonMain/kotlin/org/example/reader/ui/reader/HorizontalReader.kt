@@ -105,7 +105,8 @@ fun HorizontalReader(
     val bodyStyle = lineMetrics.bodyStyle(palette.text)
 
     BoxWithConstraints(modifier.fillMaxSize().padding(top = topInset, bottom = bottomInset)) {
-        val horizontal = 20.dp
+        // 页宽：分页宽度随之收窄，正文列两侧对称留白（点按热区仍是整页）
+        val horizontal = readerSidePadding(maxWidth, settings.pageWidth.dp)
         val vertical = 16.dp
         val widthPx = with(density) { (maxWidth - horizontal * 2).roundToPx() }
         val heightPx = with(density) { (maxHeight - vertical * 2).roundToPx() }

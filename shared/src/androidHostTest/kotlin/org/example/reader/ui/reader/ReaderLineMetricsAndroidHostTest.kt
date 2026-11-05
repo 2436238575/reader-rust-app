@@ -1,11 +1,14 @@
 package org.example.reader.ui.reader
 
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import org.example.reader.core.settings.ReaderFont
 import org.example.reader.core.settings.ReaderSettings
 
 class ReaderLineMetricsAndroidHostTest {
@@ -52,6 +55,28 @@ class ReaderLineMetricsAndroidHostTest {
         assertEquals(4.5.dp, metrics.paragraphGapDp(density))
         // 3.6sp × 1.5 × 1.25 = 6.75px，必须沿用 toInt 截断为 6。
         assertEquals(6, metrics.paragraphGapPx(density))
+    }
+
+    @Test
+    fun fontFamilyAndWeightReachTheBodyStyle() {
+        val serif = ReaderLineMetrics.from(
+            ReaderSettings(fontFamily = ReaderFont.Songti, fontWeight = 700),
+        )
+        val style = serif.bodyStyle(Color.Black)
+
+        assertEquals(FontFamily.Serif, style.fontFamily)
+        assertEquals(FontWeight.Bold, style.fontWeight)
+        assertEquals(FontFamily.Default, ReaderLineMetrics.from(ReaderSettings()).fontFamily)
+        assertEquals(FontWeight.Normal, ReaderLineMetrics.from(ReaderSettings()).fontWeight)
+        assertEquals(FontFamily.SansSerif, ReaderLineMetrics.from(ReaderSettings(fontFamily = ReaderFont.Heiti)).fontFamily)
+        assertEquals(FontFamily.Monospace, ReaderLineMetrics.from(ReaderSettings(fontFamily = ReaderFont.Mono)).fontFamily)
+    }
+
+    @Test
+    fun outOfRangeWeightIsClampedBeforeConstructingFontWeight() {
+        // FontWeight(Int) 只接受 1..1000，越界值必须在这里夹住而不是让整页排版抛异常
+        assertEquals(100, ReaderLineMetrics.from(ReaderSettings(fontWeight = -50)).fontWeight.weight)
+        assertEquals(900, ReaderLineMetrics.from(ReaderSettings(fontWeight = 5000)).fontWeight.weight)
     }
 
     @Test

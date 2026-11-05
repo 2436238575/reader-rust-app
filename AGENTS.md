@@ -178,6 +178,12 @@ androidApp/        Activity、清单、图标、资源
   接替换规则（P2-8）时顺序固定为 **替换规则 → 简繁转换**；两步都只能改文本，
   **不得改变换行数量**（配图 `paraIndex` 是原始行号）。转换必须离开主线程
   （`Dispatchers.Default`，首次词典解析 ~0.4s），失败一律回退原文。
+- **排版项（P1-1 定稿）**：字号/行高/段距/正文字体/字重只在 `ReaderLineMetrics.bodyStyle`
+  出口设置（`ReaderFont` → Compose 通用字族；字重先夹 100..900 再构造 `FontWeight`）。
+  页宽只经 `readerSidePadding(windowWidth, pageWidth)` 作用于**正文列**，四个容器共用；
+  顶/底栏、进度条与点按热区保持全宽——不要在容器里各写一套 padding。
+  新增排版项必须进 `ReaderSettings`（默认值 + 读盘 clamp），并在
+  `ReaderSettingsStoreAndroidHostTest` 补「默认值 / 越界 / 重载 / 脏数据」四类断言。
 - 翻页模式的正文区域由 `contentIndex`（正文属于哪一章，现为 `body.chapterIndex` 的派生值）把关：
   换章时 `currentIndex` 先变、正文后到，必须等两者一致再排版，
   否则会拿上一章正文分页并提前消费掉恢复位置。

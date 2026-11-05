@@ -2,11 +2,14 @@ package org.example.reader.ui.reader
 
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextIndent
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.sp
+import org.example.reader.core.settings.ReaderFont
 import org.example.reader.core.settings.ReaderSettings
 
 /** 所有阅读容器共享的正文排版口径；标题、系统栏 inset 与章尾不属于这里。 */
@@ -15,12 +18,18 @@ data class ReaderLineMetrics(
     val lineHeight: TextUnit,
     val paragraphSpacing: TextUnit,
     val firstLineIndent: TextUnit,
+    /** 正文字族：只有通用字族（Default/Sans/Serif/Mono），见 [ReaderFont]。 */
+    val fontFamily: FontFamily = FontFamily.Default,
+    /** 正文字重 100..900。 */
+    val fontWeight: FontWeight = FontWeight.Normal,
 ) {
     /** 正文 TextStyle 的唯一生产入口。 */
     fun bodyStyle(color: Color): TextStyle = TextStyle(
         fontSize = fontSize,
         lineHeight = lineHeight,
         color = color,
+        fontFamily = fontFamily,
+        fontWeight = fontWeight,
         textIndent = TextIndent(firstLine = firstLineIndent),
     )
 
@@ -37,6 +46,28 @@ data class ReaderLineMetrics(
             lineHeight = (settings.fontSize * settings.lineHeight).sp,
             paragraphSpacing = (settings.fontSize * settings.paragraphSpacing).sp,
             firstLineIndent = (settings.fontSize * 2).sp,
+            fontFamily = settings.fontFamily.toFontFamily(),
+            // 先夹到设置域（100..900）再构造：FontWeight(Int) 只接受 1..1000，
+            // 而且超出设置域的值没有对应的 UI 语义（手改 prefs / 跨端同步都可能出现）
+            fontWeight = FontWeight(
+                settings.fontWeight.coerceIn(
+                    ReaderSettings.MIN_FONT_WEIGHT,
+                    ReaderSettings.MAX_FONT_WEIGHT,
+                ),
+            ),
         )
     }
+}
+
+/**
+ * 字体族映射。
+ *
+ * 只用 Compose 的通用字族：Android 没有内置楷体/仿宋，硬映射到不存在的字族
+ * 会静默回落到默认字体，用户点了「楷体」却看不出变化。
+ */
+internal fun ReaderFont.toFontFamily(): FontFamily = when (this) {
+    ReaderFont.System -> FontFamily.Default
+    ReaderFont.Heiti -> FontFamily.SansSerif
+    ReaderFont.Songti -> FontFamily.Serif
+    ReaderFont.Mono -> FontFamily.Monospace
 }

@@ -53,6 +53,7 @@ import androidx.compose.ui.unit.dp
 import org.example.reader.core.settings.AutoPageMode
 import org.example.reader.core.settings.ClickAction
 import org.example.reader.core.settings.ReadMethod
+import org.example.reader.core.settings.ReaderFont
 import org.example.reader.core.text.ChineseMode
 import org.example.reader.core.settings.ReaderSettings
 import kotlin.math.roundToInt
@@ -97,10 +98,18 @@ fun ReaderSettingsPanel(
     onEyeCareChange: (Boolean) -> Unit,
     onLineHeightChange: (Float) -> Unit,
     onParagraphSpacingChange: (Float) -> Unit,
+    /** 正文字体族（P1-1）：改完立即重排。 */
+    onFontFamilyChange: (ReaderFont) -> Unit,
+    /** 字重 100..900，步进 100。 */
+    onFontWeightChange: (Int) -> Unit,
+    /** 正文列宽（dp），步进 50。 */
+    onPageWidthChange: (Int) -> Unit,
     /** 章节配图开关（P1-6）：关掉后不再请求配图，正文回到纯文本排版。 */
     onShowChapterImagesChange: (Boolean) -> Unit,
     /** 简繁转换（P1-7）：改完当场重排当前章。 */
     onChineseModeChange: (ChineseMode) -> Unit,
+    /** 章节预加载（P1-5）：只影响后续取章。 */
+    onPreloadChange: (Boolean) -> Unit,
     /**
      * 自动阅读（P1-8）三个回调。
      *
@@ -154,7 +163,25 @@ fun ReaderSettingsPanel(
             fontSize = settings.fontSize,
             onFontSizePreview = onFontSizePreview,
             onFontSizeChange = onFontSizeChange,
-            onOpenFontFamily = { onHint("字体选择将在 P1-1 后续接入") },
+        )
+
+        FontFamilyRow(
+            font = settings.fontFamily,
+            onSelect = onFontFamilyChange,
+        )
+
+        StepperRow(
+            label = "字重",
+            value = "${settings.fontWeight}",
+            onMinus = { onFontWeightChange(settings.fontWeight - 100) },
+            onPlus = { onFontWeightChange(settings.fontWeight + 100) },
+        )
+
+        StepperRow(
+            label = "页宽",
+            value = "${settings.pageWidth}dp",
+            onMinus = { onPageWidthChange(settings.pageWidth - ReaderSettings.PAGE_WIDTH_STEP) },
+            onPlus = { onPageWidthChange(settings.pageWidth + ReaderSettings.PAGE_WIDTH_STEP) },
         )
 
         BackgroundRow(selected = settings.themeIndex, onSelect = onThemeChange)
@@ -181,9 +208,18 @@ fun ReaderSettingsPanel(
             onSelect = onChineseModeChange,
         )
 
-        ImageToggleRow(
+        ToggleRow(
+            title = "章节配图",
+            subtitle = "关闭后不请求配图，按纯文本排版",
             checked = settings.showChapterImages,
             onChange = onShowChapterImagesChange,
+        )
+
+        ToggleRow(
+            title = "章节预加载",
+            subtitle = "进章后预取前后章节；关闭可省流量，翻章会慢一点",
+            checked = settings.preloadEnabled,
+            onChange = onPreloadChange,
         )
 
         MiscRow(
@@ -292,7 +328,6 @@ private fun FontSizeRow(
     fontSize: Int,
     onFontSizePreview: (Int) -> Unit,
     onFontSizeChange: (Int) -> Unit,
-    onOpenFontFamily: () -> Unit,
 ) {
     var dragValue by remember(fontSize) { mutableFloatStateOf(fontSize.toFloat()) }
     Column {
@@ -305,8 +340,6 @@ private fun FontSizeRow(
                 modifier = Modifier.width(44.dp),
             )
             StepButton(label = "A＋", onClick = { onFontSizeChange(fontSize + 1) })
-            Spacer(Modifier.weight(1f))
-            TextButton(onClick = onOpenFontFamily) { Text("系统字体") }
         }
         Slider(
             value = dragValue,
@@ -319,6 +352,38 @@ private fun FontSizeRow(
             // 步数 = 中间可停的整数值个数，让滑杆按 1sp 吸附
             steps = (ReaderSettings.MAX_FONT_SIZE - ReaderSettings.MIN_FONT_SIZE - 1).coerceAtLeast(0),
             modifier = Modifier.fillMaxWidth(),
+        )
+    }
+}
+
+/**
+ * 字体族四选一。
+ *
+ * 只列 Android 真有的通用字族：楷体/仿宋没有内置字体，列出来也只会回落，
+ * 「点了没变化」的选项比没有更糟；从 Web 同步过来的 kaiti/fangsong 由
+ * [ReaderFont.fromKey] 落到宋体。
+ */
+@Composable
+private fun FontFamilyRow(font: ReaderFont, onSelect: (ReaderFont) -> Unit) {
+    Column {
+        Text("正文字体", style = MaterialTheme.typography.labelLarge)
+        Spacer(Modifier.height(6.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            ReaderFont.entries.forEach { option ->
+                FilterChip(
+                    selected = option == font,
+                    onClick = { onSelect(option) },
+                    label = {
+                        Text(option.label, style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                    },
+                )
+            }
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text = "黑体/宋体/等宽对应系统 sans/serif/mono；楷体、仿宋按宋体呈现。",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
 }
@@ -483,16 +548,19 @@ private fun ChineseModeRow(mode: ChineseMode, onSelect: (ChineseMode) -> Unit) {
     }
 }
 
+/** 阅读器里成对出现的「标题 + 说明 + 开关」行（配图、预加载共用）。 */
 @Composable
-private fun ImageToggleRow(
+private fun ToggleRow(
+    title: String,
+    subtitle: String,
     checked: Boolean,
     onChange: (Boolean) -> Unit,
 ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
-            Text("章节配图", style = MaterialTheme.typography.labelLarge)
+            Text(title, style = MaterialTheme.typography.labelLarge)
             Text(
-                text = "关闭后不请求配图，按纯文本排版",
+                text = subtitle,
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

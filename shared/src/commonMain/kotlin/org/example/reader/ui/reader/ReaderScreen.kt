@@ -101,6 +101,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.example.reader.core.AppDependencies
 import org.example.reader.core.model.Book
+import org.example.reader.core.model.ChapterBlock
 import org.example.reader.core.platform.ApplyWindowBrightness
 import org.example.reader.core.platform.rememberSystemBrightness
 import org.example.reader.core.settings.AutoPageMode
@@ -121,6 +122,21 @@ private data class SingleChapterRestoreKey(
     val chapterIndex: Int,
     val contentIndex: Int,
     val body: ChapterBlockSnapshot?,
+    val horizontalMode: Boolean,
+    val continuousMode: Boolean,
+)
+
+/**
+ * 单章列表「正文 + 渲染方式」签名，用来判断刷新后是否需要重新对齐。
+ *
+ * 注意它与 [SingleChapterRestoreKey] 的差别：这里**不含** `revision`。同一份正文的
+ * 刷新会产生新 revision（恢复 effect 要重跑），但块列表完全相同、LazyColumn 已保留
+ * 真实视口偏移，再 scrollToItem 会把顶部被裁的长段落换成「块首对齐」，用户会看到
+ * 整屏上跳。内容真变了（换章、洗稿后段数/文字不同）才重新定位。
+ */
+private data class SingleChapterContentKey(
+    val chapterIndex: Int,
+    val blocks: List<ChapterBlock>,
     val horizontalMode: Boolean,
     val continuousMode: Boolean,
 )
@@ -217,6 +233,12 @@ fun ReaderScreen(
     var completedSingleChapterRestore by remember {
         mutableStateOf<SingleChapterRestoreKey?>(null)
     }
+    // 「同一章 + 同一份块列表 + 同一渲染方式」的刷新不必重新对齐：LazyColumn 自己会
+    // 保留首项下标与项内像素偏移，重新 scrollToItem(块首) 反而会把视口顶部长段落的
+    // 尾巴顶出屏幕（实测 255px）。只有正文真的变了（换章/洗稿/首次进入）才重新定位。
+    var renderedContent by remember {
+        mutableStateOf<SingleChapterContentKey?>(null)
+    }
 
     // 单章竖排按 currentFraction 恢复；恢复完成前禁止列表快照覆盖 VM 真源。
     // revision 让相同正文的同章刷新也重新定位，不能以结构相等的 blocks 代替应用代际。
@@ -229,10 +251,28 @@ fun ReaderScreen(
         horizontalMode,
         continuousMode,
     ) {
-        if (horizontalMode || continuousMode || state.blocks.isEmpty()) return@LaunchedEffect
+        if (horizontalMode || continuousMode || state.blocks.isEmpty()) {
+            // 横翻/连续模式不用本列表定位；同时清掉签名，切回单章时必须重新对齐
+            // （横翻期间 VM 位置可能已经变了，保留旧像素偏移会回到离开时的位置）。
+            renderedContent = null
+            return@LaunchedEffect
+        }
         // 换章时 currentIndex 先变、正文后到：此时快照还是**上一章**的，
         // 按它滚到「末尾」（prev 的方向）会闪一帧旧正文。等正文所属章对齐再定位。
         if (state.contentIndex != state.currentIndex) return@LaunchedEffect
+        val contentKey = SingleChapterContentKey(
+            chapterIndex = state.currentIndex,
+            blocks = state.blocks,
+            horizontalMode = horizontalMode,
+            continuousMode = continuousMode,
+        )
+        val keepViewport = renderedContent == contentKey
+        renderedContent = contentKey
+        if (keepViewport) {
+            // 内容与渲染方式都没变：保留现有像素偏移，只重新开放采集。
+            completedSingleChapterRestore = singleChapterRestoreKey
+            return@LaunchedEffect
+        }
         val restore = restoreFraction
         // 口径统一为**段落比例**（R-06）：上报是「首个可见段落下标 / 段数」，
         // 恢复必须用它的逆运算，否则退出重进会稳定偏移若干段。
@@ -613,6 +653,8 @@ fun ReaderScreen(
                                 // Scroll↔Scroll2；横翻/双页则沿用真实翻页已写入的 VM 真源。
                                 val contentMatches = state.contentIndex == state.currentIndex
                                 val layout = listState.layoutInfo
+                                // 与 chapterParagraphFraction 共用同一「块顶进入视口」口径，
+                                // 保证切换模式时交出去的位置和滚动采样一致。
                                 val first = firstContinuousViewportItem(
                                     items = layout.visibleItemsInfo,
                                     viewportStart = layout.viewportStartOffset,
@@ -1108,8 +1150,14 @@ private suspend fun autoScrollStep(block: suspend () -> Unit): Boolean =
  * 旧实现拿 `totalItemsCount` 当分母、拿块下标当分子，分母里混进了章头/进度/错误/翻章行，
  * 于是同一段落在竖排与横翻（按段落下标）算出来的比例不同，换模式或重进就稳定差一页。
  *
- * 这里分子一律是「首个可见段落下标」（首项是章头时取 0），分母是该章段数，
+ * 这里分子一律是「首个可见块下标」（首项是章头时取 0），分母是该章块数，
  * 与 `HorizontalReader` 的 `blockFraction`、连续阅读的上报口径完全一致。
+ *
+ * 「首个可见」必须用 `firstContinuousViewportItem`（排除块顶被裁到视口外的那一项），
+ * **不能**直接取 `visibleItemsInfo.firstOrNull()`：长段落可以顶在视口外很远
+ * （实测 first.offset=-441 仍有大半在屏内），取它会把位置报成上一块，恢复又按该块对齐，
+ * 于是刷新一次退一块（实测 7010→6907，正文同步后退一段）。这里的「可见」是
+ * 「块顶进入视口」，与 `scrollToItem` 的对齐口径互逆。
  */
 private fun androidx.compose.foundation.lazy.LazyListState.chapterParagraphFraction(
     paragraphCount: Int,

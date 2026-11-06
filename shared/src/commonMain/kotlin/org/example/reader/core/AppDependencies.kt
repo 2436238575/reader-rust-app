@@ -2,6 +2,7 @@ package org.example.reader.core
 
 import coil3.ImageLoader
 import org.example.reader.core.font.FontStore
+import org.example.reader.core.highlight.KeywordHighlightStore
 import org.example.reader.core.net.ReaderApi
 import org.example.reader.core.recent.RecentBooksStore
 import org.example.reader.core.session.SessionStore
@@ -46,6 +47,9 @@ interface AppDependencies {
 
     /** 需要按需下载的字体（小米 MiSans）的本地缓存与下载。 */
     val fonts: FontStore
+
+    /** 关键词高亮规则（P2-3）：阅读器切块时写入 span。 */
+    val keywordHighlights: KeywordHighlightStore
 
     /** 清理会话凭据（Cookie + 本地登录提示）。 */
     fun clearSession()

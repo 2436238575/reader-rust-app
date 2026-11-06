@@ -44,7 +44,16 @@ data class TextSpan(
     val style: TextSpanStyle = TextSpanStyle.NONE,
 )
 
-/** 本轮纯文本只使用 [NONE]，不解释任何 HTML 或装饰标记。 */
-enum class TextSpanStyle {
-    NONE,
+/**
+ * 块内文本样式。
+ *
+ * 只有两种：无装饰、关键词高亮底色。**不做**加粗/斜体等下划线之外的扩展——
+ * 划线（P2-1）与搜索命中（P2-4）以后都复用 [Background] 这一层，
+ * 新增样式时先确认能覆盖它们，别各写一套。
+ */
+sealed interface TextSpanStyle {
+    data object NONE : TextSpanStyle
+
+    /** 关键词高亮： [argb] 为 0xAARRGGBB，含透明度（见 `KeywordHighlightRule.COLORS`）。 */
+    data class Background(val argb: Long) : TextSpanStyle
 }

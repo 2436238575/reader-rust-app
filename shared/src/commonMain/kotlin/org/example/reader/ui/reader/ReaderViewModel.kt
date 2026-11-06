@@ -21,6 +21,7 @@ import org.example.reader.core.model.BookChapter
 import org.example.reader.core.model.ChapterBlockBuilder
 import org.example.reader.core.model.ChapterContent
 import org.example.reader.core.model.ChapterImageInfo
+import org.example.reader.core.model.KeywordHighlighter
 import org.example.reader.core.net.ApiResult
 import org.example.reader.core.util.nowMillis
 import kotlin.math.roundToInt
@@ -366,7 +367,10 @@ class ReaderViewModel(
         val snapshot = ChapterBlockSnapshot(
             chapterIndex = index,
             source = content,
-            blocks = ChapterBlockBuilder.build(display, images),
+            blocks = KeywordHighlighter.apply(
+                ChapterBlockBuilder.build(display, images),
+                deps.keywordHighlights.rulesFor(bookId),
+            ),
             revision = generation,
         )
         val restore = restoreFraction.coerceIn(0f, 1f)

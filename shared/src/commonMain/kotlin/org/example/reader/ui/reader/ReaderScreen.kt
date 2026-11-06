@@ -122,7 +122,7 @@ import org.example.reader.ui.components.ReaderIcons
 import kotlin.math.roundToInt
 
 /** 阅读器内可挂载的面板。目录是独立页面，不在此列。 */
-private enum class ReaderPanel { Settings }
+private enum class ReaderPanel { Settings, Keywords }
 
 /** 单章列表的一次恢复身份；正文应用代际、章号或渲染类别变化都会使旧完成标记失效。 */
 private data class SingleChapterRestoreKey(
@@ -254,6 +254,15 @@ fun ReaderScreen(
     val fontRevision by deps.fonts.revision.collectAsStateWithLifecycle()
     val fontDownload by deps.fonts.state.collectAsStateWithLifecycle()
     var fontRetry by remember { mutableStateOf(0) }
+    // 关键词高亮：规则改动后重建当前章（高亮在切块时写进 span）
+    val highlightRules by deps.keywordHighlights.rules.collectAsStateWithLifecycle()
+    val highlightRevision by deps.keywordHighlights.revision.collectAsStateWithLifecycle()
+    var lastHighlightRevision by remember { mutableStateOf(highlightRevision) }
+    LaunchedEffect(highlightRevision) {
+        if (lastHighlightRevision == highlightRevision) return@LaunchedEffect
+        lastHighlightRevision = highlightRevision
+        viewModel.rebuildCurrentChapter()
+    }
     val fontPath = remember(settings.fontFamily, settings.fontWeight, fontRevision) {
         val font = settings.fontFamily
         deps.fonts.cachedPath(font, settings.fontWeight)
@@ -744,6 +753,18 @@ fun ReaderScreen(
                 MaterialTheme(colorScheme = sheetScheme) {
                     ApplyWindowBrightness(settings.brightness)
                     when (panel) {
+                        ReaderPanel.Keywords -> KeywordHighlightPanel(
+                            rules = highlightRules,
+                            bookId = bookId,
+                            bookTitle = state.book?.name ?: "本书",
+                            onAdd = { keyword, color, scope, bookIdOrNull ->
+                                deps.keywordHighlights.add(keyword, color, scope, bookIdOrNull)
+                            },
+                            onToggle = deps.keywordHighlights::setEnabled,
+                            onDelete = deps.keywordHighlights::delete,
+                            onBack = { activePanel = ReaderPanel.Settings },
+                        )
+
                         ReaderPanel.Settings -> ReaderSettingsPanel(
                             settings = settings,
                             // 滑杆拖动中只改内存（正文/面板实时跟随），松手才落盘
@@ -803,6 +824,8 @@ fun ReaderScreen(
                             onPageWidthChange = deps.readerSettings::setPageWidth,
                             onShowChapterImagesChange = deps.readerSettings::setShowChapterImages,
                             onChineseModeChange = deps.readerSettings::setChineseMode,
+                            keywordRuleCount = highlightRules.size,
+                            onOpenKeywords = { activePanel = ReaderPanel.Keywords },
                             onPreloadChange = deps.readerSettings::setPreloadEnabled,
                             // 自动阅读（P1-8）：面板只配「怎么滚」，开关仍在底栏
                             onClickActionChange = deps.readerSettings::setClickAction,

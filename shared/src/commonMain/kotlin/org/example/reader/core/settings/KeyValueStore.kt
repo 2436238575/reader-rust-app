@@ -44,6 +44,9 @@ object SettingsKeys {
     const val READER_PRELOAD = "reader_preload"
     /** 简繁转换：`simplified`（默认）/ `traditional`，取值与前端 `chineseMode` 一致。 */
     const val READER_CHINESE_MODE = "reader_chinese_mode"
+
+    /** 关键词高亮规则（JSON 数组，见 `KeywordHighlightStore`）。 */
+    const val READER_KEYWORD_HIGHLIGHTS = "reader_keyword_highlights"
     /**
      * 已废弃：亮度不再落盘（每次进阅读器取系统亮度）。
      * 旧版本写入的 `reader_brightness` 留在 prefs 里不会被读取，删除键反而会多一次写操作。

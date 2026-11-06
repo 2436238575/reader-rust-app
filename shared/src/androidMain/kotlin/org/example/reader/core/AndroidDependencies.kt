@@ -6,6 +6,7 @@ import coil3.network.okhttp.OkHttpNetworkFetcherFactory
 import coil3.request.crossfade
 import org.example.reader.core.font.AndroidFontStore
 import org.example.reader.core.font.FontStore
+import org.example.reader.core.highlight.KeywordHighlightStore
 import org.example.reader.core.net.OkHttpClientHolder
 import org.example.reader.core.net.ReaderApi
 import org.example.reader.core.net.SharedPrefsCookieJar
@@ -58,6 +59,8 @@ class AndroidDependencies(context: Context) : AppDependencies {
     override val chineseConverter: ChineseConverter = OpenccChineseConverter()
 
     override val fonts: FontStore = AndroidFontStore(appContext)
+
+    override val keywordHighlights = KeywordHighlightStore(settings)
 
     override val imageLoader: ImageLoader = ImageLoader.Builder(appContext)
         .components {

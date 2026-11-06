@@ -12,8 +12,10 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -28,8 +30,13 @@ import org.example.reader.core.model.TextSpanStyle
 internal fun TextBlock.toAnnotatedString(): AnnotatedString {
     val builder = AnnotatedString.Builder(text)
     spans.forEach { span ->
-        when (span.style) {
+        when (val style = span.style) {
             TextSpanStyle.NONE -> Unit
+            is TextSpanStyle.Background -> builder.addStyle(
+                SpanStyle(background = Color(style.argb)),
+                span.start.coerceIn(0, text.length),
+                span.end.coerceIn(0, text.length),
+            )
         }
     }
     return builder.toAnnotatedString()

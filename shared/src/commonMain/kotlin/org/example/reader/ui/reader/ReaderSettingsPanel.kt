@@ -116,6 +116,9 @@ fun ReaderSettingsPanel(
     onChineseModeChange: (ChineseMode) -> Unit,
     /** 章节预加载（P1-5）：只影响后续取章。 */
     onPreloadChange: (Boolean) -> Unit,
+    /** 关键词高亮（P2-3）：设置抽屉内的二级页。 */
+    keywordRuleCount: Int,
+    onOpenKeywords: () -> Unit,
     /**
      * 自动阅读（P1-8）三个回调。
      *
@@ -233,6 +236,22 @@ fun ReaderSettingsPanel(
             checked = settings.preloadEnabled,
             onChange = onPreloadChange,
         )
+
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("关键词高亮", style = MaterialTheme.typography.labelLarge)
+                Text(
+                    text = if (keywordRuleCount == 0) {
+                        "命中处显示底色；还没有规则"
+                    } else {
+                        "命中处显示底色；$keywordRuleCount 条规则"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            TextButton(onClick = onOpenKeywords) { Text("管理") }
+        }
 
         MiscRow(
             spacingExpanded = spacingExpanded,
